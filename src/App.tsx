@@ -7,6 +7,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { AppSidebar } from "@/components/AppSidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { MathTutorChatbot } from "@/components/MathTutorChatbot";
 import Index from "./pages/Index";
 import Modules from "./pages/Modules";
 import Module from "./pages/Module";
@@ -21,8 +22,6 @@ import ModeExamPage from "./pages/ModeExamPage";
 import LinearSystemSolver from "./pages/modules/LinearSystemSolver";
 import ProfessorDashboard from "./pages/ProfessorDashboard";
 
-
-
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -34,6 +33,8 @@ const App = () => (
         <BrowserRouter>
           <SidebarProvider>
             <div className="min-h-screen flex w-full">
+              {/* Math Tutor Chatbot - Available on all pages */}
+              <MathTutorChatbot />
               <Routes>
                 <Route path="/" element={
                   <div className="w-full">

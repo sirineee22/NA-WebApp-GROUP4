@@ -4,7 +4,7 @@ from typing import Optional
 import re
 from fastapi.staticfiles import StaticFiles
 from typing import List
-from models import User, Module, Lesson, Exercise, Quiz, QuizQuestion, QuizAttemptQuestion, QuizAttemptRequest, QuizAttemptResponse
+from models import User, Module, Lesson, Exercise, Quiz, QuizQuestion, QuizAttemptRequest, QuizAttemptResponse, UserLessonProgress, QuizSubmittedAnswer
 from database import db_manager
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,10 +29,18 @@ app = FastAPI()
 from matrix_router import router as matrix_router
 from routes.calendar_routes import router as calendar_router
 from routes.dashboard_routes import router as dashboard_router
+from chatbot_router import router as chatbot_router
+from huggingface_router import router as huggingface_router
+
+# Import and include the new document router
+from document_router import router as document_router
 
 app.include_router(matrix_router)
 app.include_router(calendar_router)
 app.include_router(dashboard_router)
+app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
+app.include_router(huggingface_router, prefix="/api/huggingface", tags=["huggingface"])
+app.include_router(document_router, prefix="/api", tags=["documents"])
 
 # Mount static files directory for videos
 app.mount("/media", StaticFiles(directory="media"), name="media")
@@ -336,20 +344,34 @@ def delete_lesson(lesson_id: int):
     return {"message": "Lesson deleted"}
 
 @app.get("/lessons/module/{module_id}", response_model=List[Lesson])
-def get_lessons_by_module(module_id: int):
-    query = "SELECT * FROM lecon WHERE id_module = ? AND actif = 1"
-    result = db_manager.execute_query(query, (module_id,))
-    return [Lesson(
-        id=row['id_lecon'],
-        titre=row['titre'],
-        description=row['description'],
-        duree=row['duree'],
-        niveau=row['niveau'],
-        contenu=row['contenu'],
-        id_module=row['id_module'],
-        id_enseignant=row['id_enseignant'],
-        ordre=row['ordre']
-    ) for row in result]
+def get_lessons_by_module(module_id: int, user_id: Optional[int] = None):
+    query = """
+        SELECT l.*, 
+               CASE WHEN ulp.completed = 1 THEN 1 ELSE 0 END AS completed_status
+        FROM lecon l
+        LEFT JOIN user_lesson_progress ulp ON l.id_lecon = ulp.lesson_id AND ulp.user_id = ?
+        WHERE l.id_module = ? AND l.actif = 1
+        ORDER BY l.ordre ASC
+    """
+    params = (user_id, module_id)
+    result = db_manager.execute_query(query, params)
+    
+    lessons_data = []
+    for row in result:
+        is_completed = bool(row['completed_status']) if row['completed_status'] is not None else False
+        lessons_data.append(Lesson(
+            id=row['id_lecon'],
+            titre=row['titre'],
+            description=row['description'],
+            duree=row['duree'],
+            niveau=row['niveau'],
+            contenu=row['contenu'],
+            id_module=row['id_module'],
+            id_enseignant=row['id_enseignant'],
+            ordre=row['ordre'],
+            completed=is_completed  # Add this field
+        ))
+    return lessons_data
 
 # --- Exercise CRUD ---
 @app.post("/exercises", response_model=Exercise)
@@ -460,22 +482,23 @@ def get_exercises_by_lesson(lesson_id: int):
 @app.post("/quizzes", response_model=Quiz)
 def create_quiz(quiz: Quiz):
     query = """
-        INSERT INTO quiz (titre, id_module)
-        VALUES (?, ?)
+        INSERT INTO quiz (titre, id_module, questions, reponses, reponse_correcte, auteur)
+        VALUES (?, ?, ?, ?, ?, ?)
     """
-    db_manager.execute_query(query, (quiz.titre, quiz.id_module))
+    db_manager.execute_query(query, (quiz.titre, quiz.id_module, json.dumps(quiz.questions), json.dumps([]), json.dumps([]), "System")) # Assuming questions, reponses, reponse_correcte as JSON strings
     get_query = "SELECT * FROM quiz WHERE titre = ? AND id_module = ? ORDER BY id_quiz DESC LIMIT 1"
     result = db_manager.execute_query(get_query, (quiz.titre, quiz.id_module))
     if not result:
         raise HTTPException(status_code=500, detail="Quiz creation failed")
     quiz_id = result[0]['id_quiz']
-    # Insert questions
-    for q in quiz.questions:
-        db_manager.execute_query(
-            "INSERT INTO quiz_question (id_quiz, enonce, choix, bonnes_reponses) VALUES (?, ?, ?, ?)",
-            (quiz_id, q.enonce, json.dumps(q.choix), json.dumps(q.bonnes_reponses))
-        )
-    # Return full quiz with questions
+    
+    # Insert questions into quiz_question table if provided in the Quiz object
+    if quiz.questions:
+        for q in quiz.questions:
+            db_manager.execute_query(
+                "INSERT INTO quiz_question (id_quiz, enonce, choix, bonnes_reponses) VALUES (?, ?, ?, ?)",
+                (quiz_id, q.enonce, json.dumps(q.choix), json.dumps(q.bonnes_reponses))
+            )
     return get_quiz(quiz_id)
 
 @app.get("/quizzes", response_model=List[Quiz])
@@ -485,8 +508,8 @@ def get_quizzes():
     quizzes = []
     for row in result:
         quiz_id = row['id_quiz']
-        questions = db_manager.execute_query("SELECT * FROM quiz_question WHERE id_quiz = ?", (quiz_id,))
-        questions = [QuizQuestion(id=q['id_question'], enonce=q['enonce'], choix=json.loads(q['choix']), bonnes_reponses=json.loads(q['bonnes_reponses'])) for q in questions]
+        questions_raw = db_manager.execute_query("SELECT * FROM quiz_question WHERE id_quiz = ?", (quiz_id,))
+        questions = [QuizQuestion(id=q['id_question'], enonce=q['enonce'], choix=json.loads(q['choix']), bonnes_reponses=json.loads(q['bonnes_reponses'])) for q in questions_raw]
         quizzes.append(Quiz(id=row['id_quiz'], titre=row['titre'], id_module=row['id_module'], questions=questions))
     return quizzes
 
@@ -497,8 +520,8 @@ def get_quiz(quiz_id: int):
     if not result:
         raise HTTPException(status_code=404, detail="Quiz not found")
     row = result[0]
-    questions = db_manager.execute_query("SELECT * FROM quiz_question WHERE id_quiz = ?", (quiz_id,))
-    questions = [QuizQuestion(id=q['id_question'], enonce=q['enonce'], choix=json.loads(q['choix']), bonnes_reponses=json.loads(q['bonnes_reponses'])) for q in questions]
+    questions_raw = db_manager.execute_query("SELECT * FROM quiz_question WHERE id_quiz = ?", (quiz_id,))
+    questions = [QuizQuestion(id=q['id_question'], enonce=q['enonce'], choix=json.loads(q['choix']), bonnes_reponses=json.loads(q['bonnes_reponses'])) for q in questions_raw]
     return Quiz(id=row['id_quiz'], titre=row['titre'], id_module=row['id_module'], questions=questions)
 
 @app.delete("/quizzes/{quiz_id}")
@@ -510,68 +533,87 @@ def delete_quiz(quiz_id: int):
 def get_quizzes_by_module(id_module: int):
     query = "SELECT * FROM quiz WHERE id_module = ?"
     result = db_manager.execute_query(query, (id_module,))
-    return [Quiz(**row) for row in result]
+    quizzes = []
+    for row in result:
+        quiz_id = row['id_quiz']
+        questions_raw = db_manager.execute_query("SELECT * FROM quiz_question WHERE id_quiz = ?", (quiz_id,))
+        questions = [QuizQuestion(id=q['id_question'], enonce=q['enonce'], choix=json.loads(q['choix']), bonnes_reponses=json.loads(q['bonnes_reponses'])) for q in questions_raw]
+        quizzes.append(Quiz(id=row['id_quiz'], titre=row['titre'], id_module=row['id_module'], questions=questions))
+    return quizzes
 
 @app.post("/quizzes/submit", response_model=QuizAttemptResponse)
 def submit_quiz_attempt(attempt: QuizAttemptRequest):
-    # Get the quiz with all questions
-    quiz_query = "SELECT * FROM quiz WHERE id_quiz = ?"
-    quiz_result = db_manager.execute_query(quiz_query, (attempt.quiz_id,))
-    if not quiz_result:
-        raise HTTPException(status_code=404, detail="Quiz not found")
-    
-    # Get all questions for this quiz
-    questions_query = "SELECT * FROM quiz_question WHERE id_quiz = ?"
-    questions_result = db_manager.execute_query(questions_query, (attempt.quiz_id,))
-    questions = [{
-        'id': q['id_question'],
-        'correct_answers': json.loads(q['bonnes_reponses']),
-        'points': 1.0  # Each question is worth 1 point
-    } for q in questions_result]
-    
-    # Calculate score
-    total_questions = len(questions)
-    if total_questions == 0:
-        raise HTTPException(status_code=400, detail="Quiz has no questions")
-    
-    correct_answers = 0
-    for q in questions:
-        user_attempt = next((a for a in attempt.questions if a.question_id == q['id']), None)
-        if user_attempt and set(user_attempt.selected_answers) == set(q['correct_answers']):
-            correct_answers += 1
-    
-    score = (correct_answers / total_questions) * 100
-    passed = score >= 50  # 50% passing threshold
-    
-    # Check if this is a remedial attempt
-    if not attempt.is_remedial:
-        # For regular attempts, save the score
+    try:
+        # No need to fetch quiz details by quiz_id anymore, as we directly store attempt details
+        
+        # Calculate score and passed status from the submitted attempt data
+        score = attempt.score
+        total_questions = attempt.total_questions
+        passed = score >= 50.0  # 50% passing threshold
+
+        # Save the quiz attempt to the database
         insert_query = """
-            INSERT INTO score_quiz (id_utilisateur, id_quiz, score, passed)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO score_quiz (id_utilisateur, module_title, lesson_title, score, total_questions, answers, passed, date_passage)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         db_manager.execute_query(
             insert_query,
-            (attempt.user_id, attempt.quiz_id, score, passed)
+            (
+                attempt.user_id,
+                attempt.module_title,
+                attempt.lesson_title,
+                attempt.score,
+                attempt.total_questions,
+                json.dumps([ans.dict() for ans in attempt.answers]), # Store answers as JSON string
+                passed,
+                attempt.completed_at
+            )
         )
+        
+        # Determine if remedial questions should be shown (if score is less than 50%)
+        show_remedial = not passed
+        message = "Quiz completed successfully!"
+        if show_remedial:
+            message = "You didn't pass the quiz. Would you like to try some remedial questions?"
+
+        return QuizAttemptResponse(
+            score=score,
+            passed=passed,
+            show_remedial=show_remedial,
+            message=message
+        )
+    except Exception as e:
+        logger.error(f"Error submitting quiz attempt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error submitting quiz attempt: {str(e)}")
+
+@app.get("/quizzes/results/{user_id}", response_model=List[dict])
+def get_user_quiz_results(user_id: int):
+    """
+    Get all quiz results for a specific user.
+    """
+    query = """
+        SELECT id_score, id_utilisateur, id_quiz, module_title, lesson_title, score, total_questions, answers, passed, date_passage
+        FROM score_quiz
+        WHERE id_utilisateur = ?
+        ORDER BY date_passage DESC
+    """
+    results = db_manager.execute_query(query, (user_id,))
     
-    # Check if we should show remedial questions
-    show_remedial = False
-    message = "Quiz completed successfully!"
-    
-    if not passed and not attempt.is_remedial:
-        # Check if there are any remedial questions available
-        # In a real implementation, you would check for remedial questions here
-        # For now, we'll assume there are remedial questions available
-        show_remedial = True
-        message = "You didn't pass the quiz. Would you like to try some remedial questions?"
-    
-    return QuizAttemptResponse(
-        score=score,
-        passed=passed,
-        show_remedial=show_remedial,
-        message=message
-    )
+    parsed_results = []
+    for row in results:
+        parsed_results.append({
+            'id_score': row['id_score'],
+            'user_id': row['id_utilisateur'],
+            'quiz_id': row['id_quiz'],
+            'module_title': row['module_title'],
+            'lesson_title': row['lesson_title'],
+            'score': row['score'],
+            'total_questions': row['total_questions'],
+            'answers': json.loads(row['answers']) if row['answers'] else [],
+            'passed': bool(row['passed']),
+            'completed_at': row['date_passage']
+        })
+    return parsed_results
 
 @app.get("/quizzes/user/{user_id}/module/{module_id}", response_model=List[dict])
 def get_user_quiz_progress(user_id: int, module_id: int):
@@ -579,29 +621,114 @@ def get_user_quiz_progress(user_id: int, module_id: int):
     Get user's quiz progress for a specific module.
     Returns a list of quizzes with their completion status and scores.
     """
-    # Get all quizzes for the module
+    # Get all quizzes for the module (from score_quiz table for user's attempts)
     quizzes_query = """
-        SELECT q.id_quiz, q.titre, sq.score, sq.passed, sq.date_passage
-        FROM quiz q
-        LEFT JOIN score_quiz sq ON q.id_quiz = sq.id_quiz AND sq.id_utilisateur = ?
-        WHERE q.id_module = ?
-        ORDER BY q.id_quiz
+        SELECT sq.id_score, sq.module_title, sq.lesson_title, sq.score, sq.passed, sq.date_passage, sq.total_questions, sq.answers
+        FROM score_quiz sq
+        WHERE sq.id_utilisateur = ? AND sq.module_title = (SELECT titre FROM module WHERE id_module = ?)
+        ORDER BY sq.date_passage DESC
     """
-    result = db_manager.execute_query(quizzes_query, (user_id, module_id))
+    # To filter by module_title, we need to get the module title from the module_id
+    module_title_query = "SELECT titre FROM module WHERE id_module = ?"
+    module_title_result = db_manager.execute_query(module_title_query, (module_id,))
+    if not module_title_result:
+        raise HTTPException(status_code=404, detail="Module not found")
+    module_title_str = module_title_result[0]['titre']
+
+    result = db_manager.execute_query(quizzes_query, (user_id, module_title_str))
     
     # Format the response
     quizzes = []
     for row in result:
         quizzes.append({
-            'quiz_id': row['id_quiz'],
-            'title': row['titre'],
+            'module_title': row['module_title'],
+            'lesson_title': row['lesson_title'],
             'score': row['score'],
+            'total': row['total_questions'],
             'passed': bool(row['passed']) if row['passed'] is not None else False,
-            'completed': row['score'] is not None,
-            'date_attempted': row['date_passage']
+            'completed_at': row['date_passage'],
+            'answers': json.loads(row['answers']) if row['answers'] else []
         })
     
     return quizzes
+
+# --- Lesson Completion ---
+class CompleteLessonRequest(BaseModel):
+    user_id: int
+    module_id: int
+
+@app.post("/lessons/{lesson_id}/complete")
+async def complete_lesson(lesson_id: int, request: CompleteLessonRequest):
+    try:
+        logger.info(f"Attempting to mark lesson {lesson_id} as complete for user {request.user_id} in module {request.module_id}")
+        insert_or_update_query = """
+            INSERT INTO user_lesson_progress (user_id, lesson_id, module_id, completed)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, lesson_id) DO UPDATE SET
+            completed = 1, completion_date = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND lesson_id = ?
+        """
+        execution_result = db_manager.execute_query(
+            insert_or_update_query,
+            (request.user_id, lesson_id, request.module_id, request.user_id, lesson_id)
+        )
+        logger.info(f"Lesson completion query executed. Result: {execution_result}")
+        
+        return {"status": "success", "message": "Leçon marquée comme terminée"}
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la mise à jour de la progression: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Endpoint pour récupérer les leçons déverrouillées par utilisateur et module
+@app.get("/users/{user_id}/unlocked-lessons/{module_id}")
+async def get_unlocked_lessons(user_id: int, module_id: int):
+    try:
+        cursor = db_manager.connection.cursor()
+        
+        # Récupérer les leçons déverrouillées
+        cursor.execute(
+            """
+            SELECT l.* 
+            FROM lecon l
+            JOIN unlocked_lessons ul ON l.id_lecon = ul.lesson_id
+            WHERE ul.user_id = ? AND ul.module_id = ?
+            ORDER BY l.ordre, l.id_lecon
+            """,
+            (user_id, module_id)
+        )
+        
+        unlocked_lessons = cursor.fetchall()
+        
+        # Récupérer également la première leçon si aucune n'est déverrouillée
+        if not unlocked_lessons:
+            cursor.execute(
+                """
+                SELECT * FROM lecon 
+                WHERE id_module = ? 
+                ORDER BY ordre, id_lecon 
+                LIMIT 1
+                """,
+                (module_id,)
+            )
+            first_lesson = cursor.fetchone()
+            if first_lesson:
+                # Déverrouiller automatiquement la première leçon
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO unlocked_lessons (user_id, module_id, lesson_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (user_id, module_id, first_lesson['id_lecon'])
+                )
+                db_manager.connection.commit()
+                unlocked_lessons = [first_lesson]
+        
+        return [dict(lesson) for lesson in unlocked_lessons]
+        
+    except Exception as e:
+        print(f"Erreur lors de la récupération des leçons déverrouillées: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Video Progress Tracking ---
 @app.post("/progress/video")
@@ -655,69 +782,54 @@ def get_module_progress(user_id: int, module_id: int):
     - 30%: Average quiz scores for the module
     """
     try:
-        # Get total number of videos in the module
-        total_videos_query = """
-            SELECT COUNT(*) as total_videos
+        # Get total number of lessons in the module
+        total_lessons_query = """
+            SELECT COUNT(*) as total_lessons
             FROM lecon 
             WHERE id_module = ? 
-            AND (contenu LIKE '%"type":"video"%' OR contenu LIKE '%"type":"video_manim"%')
         """
-        total_videos_result = db_manager.execute_query(total_videos_query, (module_id,))
-        total_videos = total_videos_result[0]['total_videos'] if total_videos_result else 0
+        total_lessons_result = db_manager.execute_query(total_lessons_query, (module_id,))
+        total_lessons = total_lessons_result[0]['total_lessons'] if total_lessons_result else 0
         
-        # Get user's video progress
-        video_progress_query = """
-            SELECT l.id_lecon, pe.score
-            FROM lecon l
-            LEFT JOIN progression_etudiant pe ON l.id_lecon = pe.id_lecon AND pe.id_etudiant = ?
-            WHERE l.id_module = ? 
-            AND (l.contenu LIKE '%"type":"video"%' OR l.contenu LIKE '%"type":"video_manim"%')
+        # Get number of lessons completed by the user
+        completed_lessons_query = """
+            SELECT COUNT(*) as completed_lessons_count
+            FROM user_lesson_progress
+            WHERE user_id = ? AND module_id = ? AND completed = 1
         """
-        video_progress_result = db_manager.execute_query(video_progress_query, (user_id, module_id))
+        completed_lessons_result = db_manager.execute_query(completed_lessons_query, (user_id, module_id))
+        completed_lessons_count = completed_lessons_result[0]['completed_lessons_count'] if completed_lessons_result else 0
+
+        # Calculate lesson completion percentage (80% weight)
+        lesson_completion_percentage = (completed_lessons_count / total_lessons) * 100 if total_lessons > 0 else 0
         
-        # Calculate average progress and count watched videos
-        total_progress = 0
-        watched_videos = 0
-        video_count = 0
-        
-        for row in video_progress_result:
-            video_count += 1
-            progress = row['score'] or 0
-            total_progress += progress
-            if progress >= 90:  # Consider video as watched if progress >= 90%
-                watched_videos += 1
-        
-        avg_video_progress = (total_progress / video_count) if video_count > 0 else 0
-        
-        # Get total number of quizzes in the module
-        quizzes_query = """
-            SELECT COUNT(*) as total_quizzes
-            FROM quiz q
-            WHERE q.id_module = ?
-        """
-        quizzes_result = db_manager.execute_query(quizzes_query, (module_id,))
-        total_quizzes = quizzes_result[0]['total_quizzes'] if quizzes_result else 0
-        
-        # Get user's quiz scores for this module
+        # Get user's quiz scores for this module (20% weight)
+        # Use the score_quiz table with module_title and lesson_title
         quiz_scores_query = """
             SELECT AVG(sq.score) as avg_score
             FROM score_quiz sq
-            JOIN quiz q ON sq.id_quiz = q.id_quiz
-            WHERE sq.id_utilisateur = ? AND q.id_module = ?
+            WHERE sq.id_utilisateur = ? 
+            AND sq.module_title = (SELECT titre FROM module WHERE id_module = ?)
         """
-        quiz_scores_result = db_manager.execute_query(quiz_scores_query, (user_id, module_id))
-        avg_quiz_score = quiz_scores_result[0]['avg_score'] if quiz_scores_result and quiz_scores_result[0]['avg_score'] else 0
+        module_title_query = "SELECT titre FROM module WHERE id_module = ?"
+        module_title_result = db_manager.execute_query(module_title_query, (module_id,))
+        module_title_str = module_title_result[0]['titre'] if module_title_result else None
+
+        avg_quiz_score = 0
+        if module_title_str:
+            quiz_scores_result = db_manager.execute_query(quiz_scores_query, (user_id, module_title_str))
+            avg_quiz_score = quiz_scores_result[0]['avg_score'] if quiz_scores_result and quiz_scores_result[0]['avg_score'] else 0
         
-        # Calculate overall progress (70% videos + 30% quizzes)
-        overall_progress = (avg_video_progress * 0.7) + (avg_quiz_score * 0.3)
+        # Calculate overall progress (80% lesson completion + 20% quizzes)
+        overall_progress = (lesson_completion_percentage * 0.8) + (avg_quiz_score * 0.2)
         
         return {
             "overall_progress": overall_progress,
-            "video_progress": avg_video_progress,
+            "video_progress": lesson_completion_percentage, # Re-purposing for overall lesson completion
             "quiz_score": avg_quiz_score,
-            "total_videos": total_videos,
-            "watched_videos": watched_videos,
-            "total_quizzes": total_quizzes
+            "total_videos": total_lessons, # Re-purposing for total lessons
+            "watched_videos": completed_lessons_count, # Re-purposing for completed lessons
+            "total_quizzes": 0 # This field might become irrelevant or need re-evaluation
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating module progress: {str(e)}")
@@ -778,81 +890,181 @@ class LinearSystemResponse(BaseModel):
     coeffs1: Optional[dict]
     coeffs2: Optional[dict]
 
-# Helper function to parse equations
 def parse_equation(eq: str) -> Optional[dict]:
-    # This regex is designed to be more robust for y = mx + b format
-    # It handles missing coefficients, signs, and spaces
-    match = re.match(r"y\s*=\s*(-?(?:\d*\.\d+|\d+)?)\s*\*?\s*x\s*([+\-]\s*(?:\d*\.\d+|\d+))?", eq.strip())
-    if not match:
-        return None
+    try:
+        eq = eq.replace(' ', '').lower()
 
-    m_str, b_str = match.groups()
+        # Order of checks is important: specific (x=c) before general (y=mx+b)
 
-    # Determine slope (m)
-    if m_str is None or m_str == '+':
-        m = 1.0
-    elif m_str == '-':
-        m = -1.0
-    elif m_str == '':
-        # This case can happen if the equation is just 'y=x...'
-        m = 1.0
-    else:
-        try:
-            m = float(m_str)
-        except ValueError:
-            return None # Invalid number for slope
+        # Case 1: x = c (vertical line)
+        match = re.match(r'x=(-?\d+\.?\d*)', eq)
+        if match:
+            return {"m": float('inf'), "b": float(match.group(1))} # Using 'b' for x-intercept for simplicity
 
-    # Determine y-intercept (b)
-    if b_str is None:
-        b = 0.0
-    else:
-        try:
-            b = float(b_str.replace(' ', ''))
-        except ValueError:
-            return None # Invalid number for intercept
+        # Case 2: y = mx + b (general form)
+        # This regex handles: y=mx+b, y=mx, y=x+b, y=x, y=b
+        pattern = r'y=((-?\d*\.?\d*)x)?(([+-]\d+\.?\d*))?|y=x'
+        match = re.match(pattern, eq)
+        if match:
+            m = 1.0
+            b = 0.0
 
-    return {"m": m, "b": b}
+            # Full y=x case
+            if eq == 'y=x':
+                return {"m": 1.0, "b": 0.0}
+
+            # Extract m
+            if match.group(2) is not None:
+                m_str = match.group(2)
+                if m_str == '-': m = -1.0
+                elif m_str == '' or m_str == '+': m = 1.0
+                else: m = float(m_str)
+            elif 'x' not in eq: # No 'x' term means m=0
+                m = 0.0
+
+            # Extract b
+            if match.group(3) is not None:
+                b = float(match.group(3))
+            
+            return {"m": m, "b": b}
+
+    except Exception as e:
+        logger.error(f"Error parsing equation '{eq}': {e}")
+    
+    return None
 
 @app.post("/api/solve-linear-system", response_model=LinearSystemResponse)
-def solve_linear_system(request: LinearSystemRequest):
+async def solve_linear_system(request: LinearSystemRequest):
+    # Parse the equations
     coeffs1 = parse_equation(request.eq1)
     coeffs2 = parse_equation(request.eq2)
 
-    response = {}
-
+    # Check if equations are valid
     if not coeffs1 or not coeffs2:
-        response = {"solution": None, "solution_type": "invalid", "coeffs1": coeffs1, "coeffs2": coeffs2}
+        return {
+            "solution": None, 
+            "solution_type": "invalid", 
+            "coeffs1": coeffs1, 
+            "coeffs2": coeffs2
+        }
 
-    m1, b1 = coeffs1['m'], coeffs1['b']
-    m2, b2 = coeffs2['m'], coeffs2['b']
+    try:
+        m1, b1 = coeffs1['m'], coeffs1['b']
+        m2, b2 = coeffs2['m'], coeffs2['b']
+        
+        # Handle vertical lines (infinite slope)
+        if m1 == float('inf') or m2 == float('inf'):
+            # If both are vertical lines
+            if m1 == float('inf') and m2 == float('inf'):
+                # If they have the same x-intercept, they're the same line
+                if abs(b1 - b2) < 1e-9:
+                    return {"solution": None, "solution_type": "infinite", "coeffs1": coeffs1, "coeffs2": coeffs2}
+                else:
+                    return {"solution": None, "solution_type": "none", "coeffs1": coeffs1, "coeffs2": coeffs2}
+            # If only one is vertical
+            elif m1 == float('inf'):
+                x = b1  # x-intercept for vertical line
+                y = m2 * x + b2
+                return {
+                    "solution": {"x": x, "y": y},
+                    "solution_type": "unique",
+                    "coeffs1": coeffs1,
+                    "coeffs2": coeffs2
+                }
+            else:  # m2 is vertical
+                x = b2  # x-intercept for vertical line
+                y = m1 * x + b1
+                return {
+                    "solution": {"x": x, "y": y},
+                    "solution_type": "unique",
+                    "coeffs1": coeffs1,
+                    "coeffs2": coeffs2
+                }
 
-    # Using a small tolerance for floating point comparison
-    if abs(m1 - m2) < 1e-9:
-        if abs(b1 - b2) < 1e-9:
-            return {"solution": None, "solution_type": "infinite", "coeffs1": coeffs1, "coeffs2": coeffs2}
-        else:
-            return {"solution": None, "solution_type": "none", "coeffs1": coeffs1, "coeffs2": coeffs2}
-    else:
-        x = (b2 - b1) / (m1 - m2)
-        y = m1 * x + b1
-        response = {"solution": {"x": x, "y": y}, "solution_type": "unique", "coeffs1": coeffs1, "coeffs2": coeffs2}
-
-    # Save to history if user_id is provided and solution is not invalid
-    if request.user_id and response["solution_type"] != 'invalid':
+        # Check if lines are parallel
+        if abs(m1 - m2) < 1e-9:
+            # Check if lines are coincident (same line)
+            if abs(b1 - b2) < 1e-9:
+                return {"solution": None, "solution_type": "infinite", "coeffs1": coeffs1, "coeffs2": coeffs2}
+            else:
+                return {"solution": None, "solution_type": "none", "coeffs1": coeffs1, "coeffs2": coeffs2}
+        
+        # Calculate the intersection point for non-parallel lines
         try:
-            db_manager.execute_query(
-                "INSERT INTO linear_system_history (id_utilisateur, equation1, equation2, solution_type, solution_x, solution_y) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    request.user_id,
-                    request.eq1,
-                    request.eq2,
-                    response['solution_type'],
-                    response['solution']['x'] if response['solution'] else None,
-                    response['solution']['y'] if response['solution'] else None,
-                )
-            )
+            x = (b2 - b1) / (m1 - m2)
+            y = m1 * x + b1
+            
+            # Verify the solution works for both equations (handle floating point errors)
+            y2 = m2 * x + b2
+            if abs(y - y2) > 1e-9:
+                logger.warning(f"Solution verification failed: y1={y}, y2={y2}")
+                
+            response = {
+                "solution": {"x": x, "y": y},
+                "solution_type": "unique",
+                "coeffs1": coeffs1,
+                "coeffs2": coeffs2
+            }
+        except ZeroDivisionError:
+            # This should theoretically never happen since we already checked for parallel lines
+            return {
+                "solution": None,
+                "solution_type": "error",
+                "message": "Unexpected error: Division by zero",
+                "coeffs1": coeffs1,
+                "coeffs2": coeffs2
+            }
         except Exception as e:
-            logger.error(f"Failed to save history: {e}") # Log error but don't fail the request
+            logger.error(f"Error calculating solution: {str(e)}")
+            return {
+                "solution": None,
+                "solution_type": "error",
+                "message": f"Error calculating solution: {str(e)}",
+                "coeffs1": coeffs1,
+                "coeffs2": coeffs2
+            }
+
+        # Sauvegarde dans l'historique si user_id est fourni
+        if request.user_id and response["solution_type"] != 'invalid':
+            try:
+                db_manager.execute_query(
+                    """
+                    INSERT INTO linear_system_history 
+                    (id_utilisateur, equation1, equation2, solution_type, solution_x, solution_y) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request.user_id,
+                        request.eq1,
+                        request.eq2,
+                        response['solution_type'],
+                        response['solution']['x'] if response.get('solution') else None,
+                        response['solution']['y'] if response.get('solution') else None,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Échec de la sauvegarde de l'historique: {e}")
+                # Ne pas échouer la requête à cause de l'échec de sauvegarde de l'historique
+
+        return response
+
+    except ZeroDivisionError:
+        return {
+            "solution": None,
+            "solution_type": "error",
+            "message": "Division par zéro détectée dans le calcul de la solution",
+            "coeffs1": coeffs1,
+            "coeffs2": coeffs2
+        }
+    except Exception as e:
+        logger.error(f"Erreur lors de la résolution du système: {str(e)}")
+        return {
+            "solution": None,
+            "solution_type": "error",
+            "message": f"Erreur lors de la résolution du système: {str(e)}",
+            "coeffs1": coeffs1,
+            "coeffs2": coeffs2
+        }
 
     return response
 

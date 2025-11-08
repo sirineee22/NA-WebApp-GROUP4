@@ -6,28 +6,10 @@
     <title>num</title>
     <meta name="description" content="Mon Application Web" />
     <meta name="author" content="SISINA" />
-    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/jsxgraph/distrib/jsxgraph.css" />
-    <script>
-      // Vérifier si JSXGraph est déjà chargé
-      if (!window.JXG) {
-        // Créer une promesse pour gérer le chargement de JSXGraph
-        window.JSXGraphLoaded = new Promise((resolve) => {
-          const script = document.createElement('script');
-          script.src = 'https://cdn.jsdelivr.net/npm/jsxgraph/distrib/jsxgraphcore.js';
-          script.onload = () => {
-            console.log('JSXGraph chargé avec succès');
-            resolve(true);
-          };
-          script.onerror = () => {
-            console.error('Erreur lors du chargement de JSXGraph');
-            resolve(false);
-          };
-          document.head.appendChild(script);
-        });
-      } else {
-        window.JSXGraphLoaded = Promise.resolve(true);
-      }
-    </script>
+    
+    <!-- JSXGraph for mathematical visualizations -->
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/jsxgraph@1.5.0/distrib/jsxgraph.css" />
+    <script src="https://cdn.jsdelivr.net/npm/jsxgraph@1.5.0/distrib/jsxgraphcore.js"></script>
 
     <meta property="og:title" content="Mon Application Web" />
     <meta property="og:description" content="myweb" />

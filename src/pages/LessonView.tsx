@@ -8,6 +8,7 @@ import DesmosGraph from "@/components/DesmosGraph";
 import { ContentBlock } from '../types/ContentBlock';
 import 'katex/dist/katex.min.css';
 import { InlineMath, BlockMath } from 'react-katex';
+import parse from 'html-react-parser';
 
 interface Lesson {
   id: number;
@@ -26,136 +27,322 @@ const LessonView = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [lesson, setLesson] = useState<Lesson | null>(null);
-  const [videoProgress, setVideoProgress] = useState<number>(0);
-  const [hasManimVideo, setHasManimVideo] = useState<boolean>(false);
   
-  // Vérifie si le contenu de la leçon contient une vidéo Manim
-  useEffect(() => {
-    if (lesson?.contenu) {
-      try {
-        const blocks = JSON.parse(lesson.contenu);
-        const hasManim = blocks.some((block: any) => block.type === 'video_manim');
-        setHasManimVideo(hasManim);
-      } catch (e) {
-        console.error('Erreur lors de l\'analyse du contenu de la leçon:', e);
+  // Fonction pour sauvegarder la progression de la leçon
+  const saveLessonProgress = async (lessonId: string) => {
+    if (!user) return false;
+    
+    try {
+      console.log('Sauvegarde de la progression pour la leçon:', lessonId);
+      const response = await fetch(`http://localhost:8000/lessons/${lessonId}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          user_id: user.id, // Changed from userId to user_id
+          module_id: moduleId // Changed from moduleId to module_id
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Erreur lors de la sauvegarde de la progression:', errorData);
+        return false;
       }
+      
+      const result = await response.json();
+      console.log('Progression sauvegardée avec succès:', result);
+      
+      // Mettre à jour le state local immédiatement
+      setIsVideoWatched(true);
+      setVideoProgress(100);
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde de la progression:', error);
+      return false;
     }
-  }, [lesson]);
-
-  // Video progress tracking component
-  const VideoPlayer = ({ src, userId, lessonId, moduleId, onProgressUpdate }: { 
-    src: string, 
-    userId: string | number | undefined, 
-    lessonId: string, 
-    moduleId: string | undefined,
-    onProgressUpdate?: (progress: number) => void 
-  }) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const lastTrackedProgress = useRef<number>(0);
-    const progressTimeout = useRef<NodeJS.Timeout | null>(null);
-    
-    // Track video progress with debounce
-    const trackProgress = useCallback(async (progressPercentage: number) => {
-      if (!userId || !lessonId || !moduleId) return;
-      
-      // Only update if progress has increased significantly (at least 1%)
-      if (Math.abs(progressPercentage - lastTrackedProgress.current) < 1) {
-        return;
-      }
-      
-      // Update last tracked progress
-      lastTrackedProgress.current = progressPercentage;
-      
-      try {
-        const response = await fetch('http://localhost:8000/progress/video', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: userId,
-            lesson_id: lessonId,
-            progress_percentage: Math.min(100, Math.round(progressPercentage * 10) / 10) // Round to 1 decimal place
-          })
-        });
-        
-        if (!response.ok) {
-          throw new Error('Failed to update video progress');
-        }
-        
-        console.log(`Progress updated to ${progressPercentage.toFixed(1)}%`);
-      
-      // Mettre à jour l'état de progression localement
-      if (onProgressUpdate) {
-        onProgressUpdate(progressPercentage);
-      }
-      
-      // Mettre à jour l'état global de progression
-      setVideoProgress(progressPercentage);
-      } catch (error) {
-        console.error('Error tracking video progress:', error);
-      }
-    }, [userId, lessonId, moduleId]);
-    
-    // Handle time update to track progress with debounce
-    const handleTimeUpdate = useCallback(() => {
-      if (!videoRef.current || !videoRef.current.duration) return;
-      
-      const progress = (videoRef.current.currentTime / videoRef.current.duration) * 100;
-      
-      // Clear any pending updates
-      if (progressTimeout.current) {
-        clearTimeout(progressTimeout.current);
-      }
-      
-      // Track immediately if at key points (every 10% or at the end)
-      if (progress % 10 < 0.5 || progress >= 99) {
-        trackProgress(progress);
-      } else {
-        // Otherwise, debounce the update to avoid too many API calls
-        progressTimeout.current = setTimeout(() => {
-          trackProgress(progress);
-        }, 2000); // 2 second debounce
-      }
-    }, [trackProgress]);
-    
-    // Handle video end
-    const handleEnded = useCallback(() => {
-      console.log('Video ended, marking as 100% complete');
-      trackProgress(100);
-      
-      // Force a refresh of the module progress
-      if (moduleId && userId) {
-        fetch(`http://localhost:8000/progress/module/${userId}/${moduleId}`)
-          .then(res => res.json())
-          .then(data => console.log('Module progress after video end:', data))
-          .catch(console.error);
-      }
-    }, [trackProgress, moduleId, userId]);
-    
-    // Clean up timeout on unmount
-    useEffect(() => {
-      return () => {
-        if (progressTimeout.current) {
-          clearTimeout(progressTimeout.current);
-        }
-      };
-    }, []);
-    
-    return (
-      <video
-        ref={videoRef}
-        src={src}
-        controls
-        className="w-full h-full"
-        onTimeUpdate={handleTimeUpdate}
-        onEnded={handleEnded}
-      />
-    );
   };
-  
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSolution, setShowSolution] = useState<{ [blockId: string]: boolean }>({});
+  const [lessons, setLessons] = useState<{id: string, titre: string}[]>([]);
+  const [currentLessonIndex, setCurrentLessonIndex] = useState(-1);
+  const [videoProgress, setVideoProgress] = useState(0);
+  const [isVideoWatched, setIsVideoWatched] = useState(false);
+  const [hasVideo, setHasVideo] = useState(false);
+
+  useEffect(() => {
+    if (lesson) {
+      const blocks = JSON.parse(lesson.contenu);
+      const videoExists = Array.isArray(blocks) && blocks.some(block => 
+        block.type === 'video' || block.type === 'video_manim'
+      );
+      setHasVideo(videoExists);
+    }
+  }, [lesson]);
+
+  // Récupérer la liste des leçons du module
+  useEffect(() => {
+    const fetchLessons = async () => {
+      console.log('Début du chargement des leçons pour le module:', moduleId);
+      if (!moduleId) {
+        console.log('Aucun moduleId fourni');
+        return;
+      }
+      
+      try {
+        // Récupérer les leçons du module depuis l'API
+        const response = await fetch(`http://localhost:8000/lessons/module/${moduleId}`);
+        if (!response.ok) {
+          throw new Error(`Erreur HTTP: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('Leçons reçues:', data);
+        
+        // Trier les leçons par leur ordre
+        const sortedLessons = data.sort((a: any, b: any) => a.ordre - b.ordre);
+        setLessons(sortedLessons);
+        
+        // Trouver l'index de la leçon actuelle
+        const currentIndex = sortedLessons.findIndex((l: any) => l.id.toString() === lessonId);
+        console.log('Index de la leçon actuelle:', currentIndex);
+        
+        if (currentIndex === -1) {
+          console.warn('Leçon actuelle non trouvée dans la liste des leçons');
+          return;
+        }
+        
+        setCurrentLessonIndex(currentIndex);
+      } catch (err) {
+        console.error('Erreur lors du chargement des leçons:', err);
+        // En cas d'erreur, on utilise des données factices pour le débogage
+        console.log('Utilisation de données factices pour le débogage');
+        const mockLessons = [
+          { id: '29', titre: 'Leçon actuelle', ordre: 1 },
+          { id: '30', titre: 'Prochaine leçon', ordre: 2 },
+          { id: '31', titre: 'Dernière leçon', ordre: 3 }
+        ];
+        setLessons(mockLessons);
+        const currentIndex = mockLessons.findIndex(l => l.id === lessonId);
+        setCurrentLessonIndex(currentIndex >= 0 ? currentIndex : 0);
+      }
+    };
+    
+    fetchLessons();
+  }, [moduleId, lessonId]);
+
+  // Navigation vers la leçon suivante
+  const navigateToNextLesson = async () => {
+    // Condition to save progress: if there's a video and it's not watched, OR if there's no video.
+    if ((hasVideo && !isVideoWatched) || (!hasVideo && lessonId)) {
+      const success = await saveLessonProgress(lessonId);
+      if (!success) {
+        console.error('Impossible de sauvegarder la progression avant de continuer');
+        return;
+      }
+    }
+
+    if (!lessons.length || currentLessonIndex === -1) {
+      console.log('Aucune leçon disponible ou index invalide');
+      return;
+    }
+    
+    const nextIndex = currentLessonIndex + 1;
+    if (nextIndex >= lessons.length) {
+      console.log('Dernière leçon atteinte');
+      // Save progress for the very last lesson before navigating back to module view
+      if (lessonId) {
+        await saveLessonProgress(lessonId);
+      }
+      // Utiliser navigate pour revenir à la liste des modules
+      navigate(`/modules/${moduleId}`, { state: { openLessonId: lessonId, lessonCompleted: true } }); // Add lessonCompleted: true
+      return;
+    }
+    
+    const nextLesson = lessons[nextIndex];
+    console.log('Navigation vers la leçon suivante:', nextLesson);
+    
+    // Sauvegarder la progression avant de naviguer
+    if (lessonId) {
+      await saveLessonProgress(lessonId);
+    }
+    
+    // Utiliser navigate pour la navigation SPA sans rechargement complet
+    navigate(`/lesson-view/${nextLesson.id}/${moduleId}`, { 
+      replace: true,
+      state: { fromNavigation: true }
+    });
+    
+    // Forcer un léger délai pour s'assurer que la navigation est terminée
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+    }, 100);
+  };
+
+  // Composant vidéo avec suivi temporel
+  const VideoPlayer = ({ src }: { src: string }) => {
+    // Gestion des erreurs CORS
+    const handleCorsError = (e: any) => {
+      console.error('Erreur CORS:', e);
+      console.log('Assurez-vous que le serveur backend autorise les requêtes CORS depuis ce domaine');
+      console.log('URL de la vidéo:', src);
+    };
+    console.log('Chargement de la vidéo avec src:', src);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [hasError, setHasError] = useState(false);
+    const [isVideoStarted, setIsVideoStarted] = useState(false);
+    const watchTimerRef = useRef<NodeJS.Timeout>();
+    
+    // Vérifier si l'URL est valide
+    const isValidUrl = (url: string) => {
+      try {
+        new URL(url);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+    
+    if (!isValidUrl(src) && !src.startsWith('/')) {
+      console.error('URL de la vidéo invalide:', src);
+      return (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          URL de la vidéo invalide. Veuillez vérifier le chemin de la vidéo.
+        </div>
+      );
+    }
+
+    // Marquer la vidéo comme vue après 30 secondes de lecture
+    const startWatchTimer = () => {
+      // Annuler le timer existant
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+      }
+      
+      // Démarrer un nouveau timer
+      watchTimerRef.current = setTimeout(() => {
+        console.log('Vidéo marquée comme vue (30 secondes de lecture)');
+        setIsVideoWatched(true);
+        setVideoProgress(100);
+      }, 30000); // 30 secondes
+    };
+
+    // Nettoyer le timer lors du démontage
+    useEffect(() => {
+      return () => {
+        if (watchTimerRef.current) {
+          clearTimeout(watchTimerRef.current);
+        }
+      };
+    }, []);
+
+    const handlePlay = () => {
+      console.log('Lecture démarrée');
+      setIsVideoStarted(true);
+      startWatchTimer();
+    };
+
+    const handlePause = () => {
+      console.log('Lecture en pause');
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+      }
+    };
+
+    const handleEnded = async () => {
+      console.log('Vidéo terminée');
+      setVideoProgress(100);
+      setIsVideoWatched(true);
+      
+      // Sauvegarder la progression quand la vidéo est terminée
+      if (lessonId) {
+        await saveLessonProgress(lessonId);
+      }
+      
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+      }
+    };
+
+    const handleError = (e: any) => {
+      console.error('Erreur de lecture vidéo:', e);
+      console.error('Détails de l\'erreur:', {
+        error: e,
+        videoSrc: src,
+        videoElement: videoRef.current,
+        networkState: videoRef.current?.networkState,
+        readyState: videoRef.current?.readyState,
+        errorState: videoRef.current?.error
+      });
+      setHasError(true);
+      if (watchTimerRef.current) {
+        clearTimeout(watchTimerRef.current);
+      }
+    };
+
+    return (
+      <div className="w-full space-y-2">
+        {hasError ? (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+            Impossible de charger la vidéo. Veuillez réessayer plus tard.
+          </div>
+        ) : (
+          <div className="relative">
+            <video
+              key={`video-${src}`}  // Ajout d'une clé unique pour forcer le rechargement
+              ref={videoRef}
+              src={src}
+              controls
+              className="w-full h-auto max-h-[70vh] bg-black"
+              onPlay={handlePlay}
+              onPause={handlePause}
+              onEnded={handleEnded}
+              onError={(e) => {
+                handleError(e);
+                handleCorsError(e);
+              }}
+              onLoadedMetadata={() => console.log('Métadonnées de la vidéo chargées')}
+              onCanPlay={() => console.log('La vidéo peut être lue')}
+              onCanPlayThrough={() => console.log('La vidéo peut être lue sans interruption')}
+              onStalled={() => console.log('La lecture est bloquée')}
+              onWaiting={() => console.log('En attente de données...')}
+              playsInline
+              preload="auto"
+              muted
+              autoPlay={false}
+              controlsList="nodownload"
+              crossOrigin="anonymous"
+              onLoadStart={() => console.log('Début du chargement de la vidéo')}
+              onProgress={() => console.log('Chargement en cours...')}
+            >
+              Votre navigateur ne prend pas en charge la lecture de vidéos.
+            </video>
+            
+            {!isVideoStarted && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                <button
+                  onClick={() => {
+                    const video = videoRef.current;
+                    if (video) {
+                      video.play().catch(e => {
+                        console.error('Erreur de lecture:', e);
+                        setHasError(true);
+                      });
+                    }
+                  }}
+                  className="p-4 bg-black/70 rounded-full text-white hover:bg-black/90 transition-colors"
+                >
+                  ▶️ Lire la vidéo
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (!lessonId || lessonId === 'new') {
@@ -174,10 +361,18 @@ const LessonView = () => {
         setLesson(data);
         try {
           if (data.contenu) {
+            console.log('Raw lesson content (data.contenu):', data.contenu); // Keep for debugging if needed
             const blocks = JSON.parse(data.contenu);
+            console.log('Parsed content blocks:', blocks); // Keep for debugging if needed
             if (Array.isArray(blocks)) {
               setContentBlocks(blocks);
+            } else {
+              console.warn('Content is not an array:', blocks);
+              setContentBlocks([]);
             }
+          } else {
+            console.log('No content in lesson data.');
+            setContentBlocks([]);
           }
         } catch (err) {
           console.error('Erreur lors du parsing des blocs de contenu:', err);
@@ -193,65 +388,60 @@ const LessonView = () => {
 
   const renderWithLatex = (content: string) => {
     if (!content) return null;
-    
-    // D'abord, gérer les formules en mode bloc (entre $$...$$)
-    const blockMathParts = content.split(/(\$\$[^$]+\$\$)/g);
-    
-    return blockMathParts.map((part, blockIndex) => {
-      // Si c'est une formule en mode bloc (commence et finit par $$)
+
+    // Regex to find all math expressions (inline and block)
+    const regex = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
+    const parts = content.split(regex);
+
+    return parts.map((part, index) => {
       if (part.startsWith('$$') && part.endsWith('$$')) {
-        const formula = part.slice(2, -2).trim();
-        return <BlockMath key={`block-${blockIndex}`} math={formula} />;
+        // Block Math
+        const math = part.slice(2, -2);
+        return <BlockMath key={index} math={math} />;
+      } else if (part.startsWith('$') && part.endsWith('$')) {
+        // Inline Math
+        const math = part.slice(1, -1);
+        return <InlineMath key={index} math={math} />;
+      } else {
+        // HTML content
+        return <React.Fragment key={index}>{parse(part)}</React.Fragment>;
       }
-      
-      // Sinon, chercher les formules en ligne dans le texte
-      const lineParts = part.split(/([^\\]?\$[^$\s]+\$)/g);
-      
-      return (
-        <span key={`text-${blockIndex}`}>
-          {lineParts.map((fragment, lineIndex) => {
-            // Si c'est une formule en ligne (commence par $ et finit par $)
-            if (fragment.match(/[^\\]?\$[^$\s]+\$/)) {
-              // Gérer le cas où il y a un caractère avant le $
-              if (fragment[0] !== '$') {
-                const before = fragment[0];
-                const formula = fragment.slice(1);
-                return (
-                  <React.Fragment key={`frag-${lineIndex}`}>
-                    {before}<InlineMath math={formula.slice(1, -1)} />
-                  </React.Fragment>
-                );
-              }
-              return <InlineMath key={`inline-${lineIndex}`} math={fragment.slice(1, -1)} />;
-            }
-            // Sinon, retourner le texte tel quel
-            return fragment;
-          })}
-        </span>
-      );
     });
   };
 
-  // Vérifie si l'utilisateur peut accéder à la leçon suivante
-  const canAccessNextLesson = useCallback(() => {
-    if (user?.role === 'professeur') return true;
-    if (!hasManimVideo) return true;
-    return videoProgress >= 90; // Considéré comme terminé à 90% ou plus
-  }, [hasManimVideo, videoProgress, user?.role]);
+  // Removed isMathFormula function
+  // function isMathFormula(text: string): boolean {
+  //   const mathPattern = /([=+\-*/^]|\\frac|\\sqrt|\\int|\\sum|\\det|\\lim|\\sin|\\cos|\\tan|\d+\s*[a-zA-Z])/;
+  //   return mathPattern.test(text.trim()) && text.trim().length < 100; 
+  // }
 
   // Gère la navigation vers la page suivante
   const handleNextLesson = useCallback(() => {
-    if (!canAccessNextLesson()) {
-      alert('Vous devez terminer de regarder la vidéo avant de pouvoir passer à la leçon suivante.');
-      return;
-    }
     // Logique pour passer à la leçon suivante
     // À implémenter : récupérer l'ID de la prochaine leçon
     // navigate(`/lesson/${nextLessonId}/${moduleId}`);
-  }, [canAccessNextLesson]);
+  }, []);
+
+  // Fonction utilitaire pour formater les URLs des médias
+  const formatMediaUrl = (url: string): string => {
+    if (!url) return '';
+    // Si l'URL est déjà relative, on la retourne telle quelle
+    if (url.startsWith('/')) return url;
+    // If it's a full URL to localhost:8000, convert it to a relative path
+    const localhostMatch = url.match(/^https?:\/\/localhost:8000(\/.*)$/);
+    if (localhostMatch) {
+      return localhostMatch[1];
+    }
+    return url;
+  };
 
   const renderContentBlock = (block: ContentBlock) => {
-    const content = block.content || {};
+    const content = { ...(block.content || {}) };
+    
+    // Formater les URLs des médias
+    if (content.url) {
+      content.url = formatMediaUrl(content.url);
+    }
 
     const BlockWrapper = ({ children, icon, title }: { children: ReactNode, icon: ReactNode, title: string }) => (
       <div className="mb-12">
@@ -269,13 +459,7 @@ const LessonView = () => {
         return (
           <div key={block.id} className="mb-16">
             <div className="aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl mb-4">
-              <VideoPlayer
-                src={content.url}
-                userId={user?.id}
-                lessonId={lesson?.id?.toString()}
-                moduleId={moduleId}
-                onProgressUpdate={(progress) => setVideoProgress(progress)}
-              />
+              <VideoPlayer src={content.url} />
             </div>
             <h2 className="text-3xl font-bold text-gray-900">{content.title || 'Vidéo'}</h2>
             {content.description && <p className="text-lg text-gray-600 mt-2 max-w-4xl">{content.description}</p>}
@@ -285,7 +469,17 @@ const LessonView = () => {
       case 'text':
         return (
           <div key={block.id} className="prose prose-lg max-w-none mb-12 text-gray-800 leading-relaxed">
-            {renderWithLatex(content.content)}
+            {content.content ? (
+              typeof content.content === 'string' ? (
+                <div className="whitespace-pre-wrap">
+                  {renderWithLatex(content.content)}
+                </div>
+              ) : (
+                <div>Contenu de type non pris en charge</div>
+              )
+            ) : (
+              <div className="text-gray-400 italic">Aucun contenu</div>
+            )}
           </div>
         );
 
@@ -411,27 +605,9 @@ const LessonView = () => {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-8 md:p-12">
-          {/* Bandeau d'information si la vidéo n'est pas terminée */}
-          {hasManimVideo && videoProgress < 90 && user?.role !== 'professeur' && (
-            <div className="mb-8 p-4 bg-yellow-50 border-l-4 border-yellow-400">
-              <div className="flex">
-                <div className="flex-shrink-0">
-                  <svg className="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                </div>
-                <div className="ml-3">
-                  <p className="text-sm text-yellow-700">
-                    Vous devez regarder la vidéo jusqu'à la fin pour débloquer la leçon suivante. 
-                    Progression : {Math.round(videoProgress)}%
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
 
           {contentBlocks.length === 0 ? (
-            <div className="text-center py-16">
+            <div key="empty-lesson" className="text-center py-16">
               <FileText className="w-16 h-16 mx-auto mb-6 text-gray-300" />
               <h3 className="text-2xl font-semibold text-gray-900 mb-2">Cette leçon est vide</h3>
               <p className="text-lg text-gray-600">Il n'y a pas encore de contenu à afficher.</p>
@@ -447,10 +623,58 @@ const LessonView = () => {
               )}
             </div>
           ) : (
-            contentBlocks.map((block) => renderContentBlock(block))
+            contentBlocks.map((block, index) => (
+              <React.Fragment key={`block-${block.id || index}`}>
+                {renderContentBlock(block)}
+              </React.Fragment>
+            ))
           )}
         </div>
 
+      </div>
+           {/* Bouton Leçon suivante avec progression améliorée */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 py-3 sm:px-6 lg:px-8">
+          <div className="flex flex-col">
+            {videoProgress > 0 && videoProgress < 90 && (
+              <div className="w-full bg-gray-200 rounded-full h-2 mb-2 overflow-hidden">
+                <div 
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${videoProgress}%` }}
+                />
+              </div>
+            )}
+            <div className="flex justify-end items-center">
+              {currentLessonIndex < lessons.length - 1 ? (
+                <button
+                  onClick={navigateToNextLesson}
+                  disabled={hasVideo && !isVideoWatched}
+                  className={`flex items-center font-medium transition-colors ${
+                    (hasVideo && isVideoWatched) || !hasVideo
+                      ? 'text-blue-600 hover:text-blue-800' 
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {((hasVideo && isVideoWatched) || !hasVideo) ? (
+                    <>
+                      <span className="mr-2">Leçon suivante</span>
+                      <span className="font-bold">→</span>
+                      <span className="ml-2">{lessons[currentLessonIndex + 1]?.titre}</span>
+                    </>
+                  ) : hasVideo && videoProgress > 0 ? (
+                    <span className="text-sm">Continuez à regarder pour débloquer la suite...</span>
+                  ) : (
+                    <span className="text-sm">Regardez la vidéo pour continuer</span>
+                  )}
+                </button>
+              ) : (
+                <div className="text-gray-500 font-medium">
+                  Félicitations ! Vous avez terminé ce module.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

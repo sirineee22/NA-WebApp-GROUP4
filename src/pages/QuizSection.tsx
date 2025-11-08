@@ -158,9 +158,27 @@ export default function QuizSection({ userId = 1 }: QuizSectionProps) { // Defau
   const [quizResults, setQuizResults] = useState<Record<string, QuizResult>>({});
   const [expandedQuizzes, setExpandedQuizzes] = useState<Record<string, boolean>>({});
 
-  // In a real app, you would fetch results from the backend
   useEffect(() => {
-    // Example: fetch(`/api/quiz-results?userId=${userId}`).then(res => res.json()).then(data => setQuizResults(data));
+    if (userId) {
+      fetch(`http://localhost:8000/quizzes/results/${userId}`)
+        .then(res => res.json())
+        .then(data => {
+          const newResults: Record<string, QuizResult> = {};
+          data.forEach((res: any) => {
+            newResults[res.lesson_title] = {
+              userId: res.user_id,
+              moduleTitle: res.module_title,
+              lessonTitle: res.lesson_title,
+              score: res.score,
+              total: res.total_questions,
+              answers: res.answers, 
+              completedAt: res.completed_at,
+            };
+          });
+          setQuizResults(newResults);
+        })
+        .catch(error => console.error('Error fetching quiz results:', error));
+    }
   }, [userId]);
 
   const handleQuizComplete = async (lessonTitle: string, score: number, total: number, answers: QuizAnswer[]) => {
@@ -175,23 +193,22 @@ export default function QuizSection({ userId = 1 }: QuizSectionProps) { // Defau
     };
     setQuizResults(prev => ({ ...prev, [lessonTitle]: result }));
     
-    // Send quiz results to backend
     try {
-      // In a real implementation, you would find the actual quiz ID
-      // For now, we'll use a placeholder
-      const quizId = 1;
-      
       const response = await fetch('http://localhost:8000/quizzes/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          quiz_id: quizId,
           user_id: userId,
-          questions: answers.map((answer, index) => ({
-            question_id: index,
-            selected_answers: [answer.userAnswer]
+          module_title: selectedModule, 
+          lesson_title: lessonTitle,    
+          score: score,
+          total_questions: total,
+          answers: answers.map((answer) => ({
+            question_index: answer.questionIndex, 
+            user_answer: answer.userAnswer,
+            is_correct: answer.isCorrect
           })),
-          is_remedial: false
+          completed_at: new Date().toISOString(),
         })
       });
       

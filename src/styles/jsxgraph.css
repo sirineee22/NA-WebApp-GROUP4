@@ -1,0 +1,53 @@
+/* JSXGraph styles */
+.jxgbox {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  background-color: white;
+}
+
+/* Style for the graph container */
+.jxgboard {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Style for the axes */
+.jxg-graph {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Style for the grid */
+.jxg-grid {
+  stroke: #e5e7eb !important;
+  stroke-width: 1px !important;
+}
+
+/* Style for the axes */
+.jxg-axis {
+  stroke: #808080 !important;
+  stroke-width: 1.5px !important;
+}
+
+/* Style for the points */
+.jxg-point {
+  stroke: #10b981 !important;
+  fill: #10b981 !important;
+}
+
+/* Style for the lines */
+.jxg-line {
+  stroke-width: 2px !important;
+}
+
+/* Style for the first equation line */
+.jxg-line:nth-child(1) {
+  stroke: #3b82f6 !important;
+}
+
+/* Style for the second equation line */
+.jxg-line:nth-child(2) {
+  stroke: #ef4444 !important;
+}

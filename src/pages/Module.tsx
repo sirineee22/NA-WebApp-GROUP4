@@ -12,7 +12,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Pencil, Save as SaveIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom"; // Import useLocation
 import { useSidebar } from "@/components/ui/sidebar";
 import QuizSection from "./QuizSection";
 
@@ -27,6 +27,7 @@ interface Lesson {
   completed: boolean;
   description: string;
   niveau?: string;
+  ordre?: number; // Add this line
 }
 
 interface Exercise {
@@ -46,16 +47,16 @@ interface Resource {
 }
 
 interface Module {
-  id: string;
+  id?: string;
   titre: string;
   description: string;
-  type: string;
-  contenu: string;
-  id_enseignant: string;
-  categorie: string;
-  niveau: string;
-  duree: string;
-  objectifs: string[];
+  type?: string;
+  contenu?: string;
+  id_enseignant?: string | null;
+  categorie?: string | null;
+  niveau?: string | null;
+  duree?: string | null;
+  objectifs?: string[];
 }
 
 
@@ -73,13 +74,14 @@ const Module = () => {
   const { moduleId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [moduleData, setModuleData] = useState<{ titre: string; description: string; id?: string } | null>(null);
+  const location = useLocation(); // Get location object
+  const [moduleData, setModuleData] = useState<Module | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [moduleProgress, setModuleProgress] = useState<{ overall_progress: number; video_progress: number; quiz_score: number } | null>(null);
 
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
-  const [activeTab, setActiveTab] = useState<'lecons' | 'quiz'>('lecons');
+      const [activeTab, setActiveTab] = useState<'lecons' | 'quiz'>('lecons');
   const [showCreateLesson, setShowCreateLesson] = useState(false);
   const [showEditModule, setShowEditModule] = useState(false);
   const [newLesson, setNewLesson] = useState({ title: '', content: '', duration: '', objectives: [''] });
@@ -129,7 +131,10 @@ const Module = () => {
 
   const handleEditModule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editModuleData.title || !editModuleData.description || !moduleId) return;
+    if (!editModuleData.title || !editModuleData.description || !moduleId) {
+      alert('Veuillez remplir tous les champs');
+      return;
+    }
     try {
       const res = await fetch(`http://localhost:8000/modules/${moduleId}`, {
         method: 'PUT',
@@ -137,18 +142,23 @@ const Module = () => {
         body: JSON.stringify({
           titre: editModuleData.title,
           description: editModuleData.description,
-          type: '', // adapte si besoin
-          contenu: '',
-          id_enseignant: null,
-          categorie: null,
-          niveau: null,
-          duree: null,
-          objectifs: null
-        })
+          type: moduleData?.type || '',
+          contenu: moduleData?.contenu || '',
+          id_enseignant: user?.id || null,
+          categorie: moduleData?.categorie || null,
+          niveau: moduleData?.niveau || null,
+          duree: moduleData?.duree || null,
+          objectifs: moduleData?.objectifs || []
+        }),
+        credentials: 'include'  // Important pour les sessions/cookies
       });
       if (!res.ok) throw new Error('Erreur lors de la modification du module');
       const updated = await res.json();
-      setModuleData({ titre: updated.titre, description: updated.description });
+      setModuleData(prev => ({
+        ...prev,
+        titre: updated.titre || prev?.titre || '',
+        description: updated.description || prev?.description || ''
+      }));
       setShowEditModule(false);
     } catch (err) {
       alert('Erreur lors de la modification du module');
@@ -157,11 +167,14 @@ const Module = () => {
 
   // Chargement dynamique des données
   useEffect(() => {
+    console.log("Current user in Module.tsx useEffect:", user);
     if (!moduleId) return;
     setLoading(true);
     setFetchError(null);
     // 1. Charger le module
-    fetch(`http://localhost:8000/modules/${moduleId}`)
+    fetch(`http://localhost:8000/modules/${moduleId}`, {
+      credentials: 'include'  // Important pour les sessions/cookies
+    })
       .then(res => {
         if (!res.ok) throw new Error("Module introuvable");
         return res.json();
@@ -171,7 +184,19 @@ const Module = () => {
         setModuleData({
           id: data.id_module || data.id,
           titre: data.titre || "Titre inconnu",
-          description: data.description || "Aucune description disponible"
+          description: data.description || "Aucune description disponible",
+          type: data.type || '',
+          contenu: data.contenu || '',
+          id_enseignant: data.id_enseignant,
+          categorie: data.categorie,
+          niveau: data.niveau,
+          duree: data.duree,
+          objectifs: data.objectifs || []
+        });
+        // Mettre à jour les données d'édition
+        setEditModuleData({
+          title: data.titre || "",
+          description: data.description || ""
         });
       })
       .catch((err) => {
@@ -180,19 +205,29 @@ const Module = () => {
         setFetchError(err.message);
       });
     // 2. Charger les leçons du module
-    fetch(`http://localhost:8000/lessons/module/${moduleId}`)
-      .then(res => res.json())
+    console.log("Fetching lessons with user ID:", user?.id);
+    fetch(`http://localhost:8000/lessons/module/${moduleId}${user ? `?user_id=${user.id}` : ''}`)
+      .then(res => {
+        if (!res.ok) {
+          console.error(`HTTP error! status: ${res.status}`);
+          throw new Error('Erreur lors du chargement des leçons');
+        }
+        return res.json();
+      })
       .then(lessons => {
+        console.log("RAW Lessons received from backend:", lessons); // Added this log
+        console.log("Mapped lessons (allLessons state):", lessons.map(mapLesson));
         // 3. Charger les exercices en parallèle
         Promise.all([
           fetch('http://localhost:8000/exercises').then(res => res.json()),
         ]).then(([exercises]) => {
           setAllLessons(lessons.map(mapLesson));
+          console.log("Mapped lessons (allLessons state):", lessons.map(mapLesson)); // Log mapped lessons
           setAllExercises(exercises);
         setLoading(false);
         });
       });
-  }, [moduleId]);
+  }, [moduleId, user?.id, location.state]); // Add location.state as a dependency
 
   // Fetch module progress when user and module are available
   useEffect(() => {
@@ -209,6 +244,16 @@ const Module = () => {
         .catch(err => console.error('Error fetching module progress:', err));
     }
   }, [user, moduleId]);
+
+  // Synchronise editModuleData quand moduleData change
+  useEffect(() => {
+    if (moduleData) {
+      setEditModuleData({
+        title: moduleData.titre || '',
+        description: moduleData.description || ''
+      });
+    }
+  }, [moduleData]);
 
   // Synchronise editDetailData quand selectedLesson change
   useEffect(() => {
@@ -256,10 +301,25 @@ const Module = () => {
     // Debug logs
     console.log('moduleData', moduleData);
 
+    const lessons = allLessons.sort((a, b) => (a.ordre ?? 0) - (b.ordre ?? 0));
+    const completedLessonIds = new Set(lessons.filter(l => l.completed).map(l => l.id));
+    console.log("Sorted lessons:", lessons); // Log sorted lessons
+    console.log("Completed Lesson IDs:", Array.from(completedLessonIds)); // Log completed IDs
+
+    let nextLessonToUnlockIndex = 0;
+    for (let i = 0; i < lessons.length; i++) {
+      if (!completedLessonIds.has(lessons[i].id)) {
+        nextLessonToUnlockIndex = i;
+        break;
+      }
+      nextLessonToUnlockIndex = i + 1; // If all before are complete, next one is unlockable
+    }
+    console.log("Next lesson to unlock index:", nextLessonToUnlockIndex); // Log next unlock index
+
     const isProf = user?.role === 'professeur';
 
     // Fallbacks pour les propriétés potentiellement absentes
-    const lessons = allLessons;
+    // const lessons = allLessons; // This line is now redundant after sorting and re-declaring `lessons` above.
 
     const handleSaveDetail = async () => {
       try {
@@ -275,8 +335,6 @@ const Module = () => {
         if (!res.ok) throw new Error('Erreur lors de la modification du module');
         setModuleData({ titre: editDetailData.titre, description: editDetailData.description });
         setEditingDetail(false);
-        // Mettre à jour la liste globale aussi
-        // setDossiers(prev => prev.map(d => d.id === selectedDossier.id ? { ...d, title: editDetailData.titre, description: editDetailData.description } : d)); // This line is removed
       } catch (err) {
         alert('Erreur lors de la modification du module');
       }
@@ -358,14 +416,55 @@ const Module = () => {
     };
 
     // Add this handler in the component
-    const handleToggleLessonCompleted = (lessonId: string) => {
-      setAllLessons(prev => prev.map(l =>
-          l.id === lessonId ? { ...l, completed: !l.completed } : l
-        ));
-    };
+    // const handleToggleLessonCompleted = (lessonId: string) => {
+    //   setAllLessons(prev => prev.map(l =>
+    //       l.id === lessonId ? { ...l, completed: !l.completed } : l
+    //     ));
+    // };
+
+    // Edit Module Dialog
+    const editModuleDialog = (
+      <Dialog open={showEditModule} onOpenChange={setShowEditModule}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Modifier le module</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditModule}>
+            <div className="grid gap-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="title">Titre du module</Label>
+                <Input
+                  id="title"
+                  value={editModuleData.title}
+                  onChange={(e) => setEditModuleData({...editModuleData, title: e.target.value})}
+                  placeholder="Titre du module"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="description">Description</Label>
+                <Textarea
+                  id="description"
+                  value={editModuleData.description}
+                  onChange={(e) => setEditModuleData({...editModuleData, description: e.target.value})}
+                  placeholder="Description du module"
+                  rows={4}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowEditModule(false)}>
+                Annuler
+              </Button>
+              <Button type="submit">Enregistrer</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    );
 
     return (
       <div className={`${open ? 'px-4' : 'px-12'} pt-2 pb-8 w-full`}>
+        {editModuleDialog}
         <Button variant="ghost" onClick={() => {
           setSelectedLesson(null);
           navigate('/modules');
@@ -374,40 +473,57 @@ const Module = () => {
           Retour aux modules
         </Button>
         
+        {/* Progression du module section (moved to top) */}
+        <div className="bg-white rounded-lg shadow p-6 mb-8">
+          <div className="flex justify-between mb-1">
+            <span className="text-sm font-medium text-gray-700">Progression du module</span>
+            <span className="text-sm font-medium text-gray-700">
+              {moduleProgress ? Math.round(moduleProgress.overall_progress) : 0}%
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2.5">
+            <div
+              className="bg-blue-600 h-2.5 rounded-full"
+              style={{ width: `${moduleProgress ? moduleProgress.overall_progress : 0}%` }}
+            ></div>
+          </div>
+          {moduleProgress && (
+            <div className="flex justify-between mt-1 text-xs text-gray-500">
+              <span>Vidéos: {moduleProgress.watched_videos}/{moduleProgress.total_videos}</span>
+              <span>Quiz: {Math.round(moduleProgress.quiz_score)}%</span>
+            </div>
+          )}
+        </div>
+
         {/* Header + Stats Bar */}
         <div className="bg-white rounded-lg shadow p-6 mb-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6 mb-6">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-4 mb-2">
+              <div className="flex items-center justify-between gap-4 mb-2">
                 <h1 className="text-3xl font-extrabold text-gray-900 flex items-center gap-2">
                   <BookOpen />
                   {moduleData?.titre}
                 </h1>
+                {user?.role === 'professeur' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setEditModuleData({
+                        title: moduleData?.titre || '',
+                        description: moduleData?.description || ''
+                      });
+                      setShowEditModule(true);
+                    }}
+                  >
+                    <Pencil className="h-4 w-4 mr-2" />
+                    Modifier
+                  </Button>
+                )}
               </div>
               <p className="text-gray-600 mb-4 text-lg">
                 {moduleData?.description}
               </p>
-              {/* Progress Bar */}
-              <div className="mt-4">
-                <div className="flex justify-between mb-1">
-                  <span className="text-sm font-medium text-gray-700">Progression du module</span>
-                  <span className="text-sm font-medium text-gray-700">
-                    {moduleProgress ? Math.round(moduleProgress.overall_progress) : 0}%
-                  </span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                  <div
-                    className="bg-blue-600 h-2.5 rounded-full"
-                    style={{ width: `${moduleProgress ? moduleProgress.overall_progress : 0}%` }}
-                  ></div>
-                </div>
-                {moduleProgress && (
-                  <div className="flex justify-between mt-1 text-xs text-gray-500">
-                    <span>Vidéos: {moduleProgress.watched_videos}/{moduleProgress.total_videos}</span>
-                    <span>Quiz: {Math.round(moduleProgress.quiz_score)}%</span>
-                  </div>
-                )}
-              </div>
             </div>
             <span className="bg-orange-100 text-orange-800 text-xs px-3 py-1 rounded-full self-start md:self-center">
               {/* {selectedDossier.difficulty} */}
@@ -469,53 +585,62 @@ const Module = () => {
             lessons.length === 0 ? (
               <div className="text-center text-gray-500 py-12 bg-white rounded-lg shadow">Aucune leçon pour le moment.</div>
             ) : (
-              lessons.map(lesson => (
-                <Card
-                  key={lesson.id}
-                  className="hover:shadow-md transition cursor-pointer p-0 group"
-                  onClick={() => navigate(`/lesson-view/${lesson.id}/${moduleId}`)}
-                >
-                  <div className="flex items-center gap-4 p-4">
-                    <div onClick={e => e.stopPropagation()} className="flex-shrink-0 flex items-center justify-center relative">
-                      <input
-                        type="checkbox"
-                        checked={lesson.completed}
-                        onChange={e => { e.stopPropagation(); handleToggleLessonCompleted(lesson.id); }}
-                        className="w-6 h-6 appearance-none rounded-full border-2 border-gray-300 checked:bg-blue-600 checked:border-blue-600 focus:ring-2 focus:ring-blue-400 cursor-pointer flex items-center justify-center"
-                        aria-label="Marquer la leçon comme terminée"
-                      />
-                      {lesson.completed && (
-                        <span className="absolute text-white left-1 top-0.5 text-lg pointer-events-none">✓</span>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-base text-gray-900">
-                        {lesson.title}
+              lessons.map((lesson, index) => {
+                const isLocked = index > nextLessonToUnlockIndex;
+                const cardClasses = `hover:shadow-md transition cursor-pointer p-0 group ${isLocked ? 'opacity-60 cursor-not-allowed bg-gray-100' : 'bg-white'}`;
+                
+                console.log(`Lesson: ${lesson.title}, ID: ${lesson.id}, Order: ${lesson.ordre}, Completed: ${lesson.completed}, isLocked: ${isLocked}`); // Log each lesson's status
+
+                return (
+                  <Card
+                    key={lesson.id}
+                    className={cardClasses}
+                    onClick={() => !isLocked && navigate(`/lesson-view/${lesson.id}/${moduleId}`)}
+                  >
+                    <div className="flex items-center gap-4 p-4">
+                      <div onClick={e => e.stopPropagation()} className="flex-shrink-0 flex items-center justify-center relative">
+                        <input
+                          type="checkbox"
+                          checked={lesson.completed}
+                          // onChange={e => { e.stopPropagation(); handleToggleLessonCompleted(lesson.id); }} // Removed onChange
+                          className="w-6 h-6 appearance-none rounded-full border-2 border-gray-300 checked:bg-blue-600 checked:border-blue-600 focus:ring-2 focus:ring-blue-400 cursor-pointer flex items-center justify-center"
+                          aria-label="Marquer la leçon comme terminée"
+                          disabled={isLocked} // Still disable if locked by sequence
+                          readOnly // Make it read-only
+                        />
+                        {lesson.completed && (
+                          <span className="absolute text-white left-1 top-0.5 text-lg pointer-events-none">✓</span>
+                        )}
                       </div>
-                      <div className="text-gray-600 text-sm mt-1 line-clamp-1">
-                        {lesson.description}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-base text-gray-900">
+                          {lesson.title}
+                        </div>
+                        <div className="text-gray-600 text-sm mt-1 line-clamp-1">
+                          {lesson.description}
+                        </div>
+                        <div className="flex items-center gap-4 mt-2">
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            <Clock className="w-4 h-4" /> {lesson.duration}
+                          </span>
+                          {lesson.videoUrl
+                            ? <span className="text-xs text-gray-500 flex items-center gap-1"><Play className="w-4 h-4" /> Vidéo Manim</span>
+                            : <span className="text-xs text-gray-400 italic">Aucune vidéo</span>
+                          }
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 mt-2">
-                        <span className="text-xs text-gray-500 flex items-center gap-1">
-                          <Clock className="w-4 h-4" /> {lesson.duration}
-                        </span>
-                        {lesson.videoUrl
-                          ? <span className="text-xs text-gray-500 flex items-center gap-1"><Play className="w-4 h-4" /> Vidéo Manim</span>
-                          : <span className="text-xs text-gray-400 italic">Aucune vidéo</span>
-                        }
-                      </div>
-                    </div>
-                    {/* Icône suppression, visible au survol */}
-                    <button
-                      className="ml-2 text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition"
-                      title="Supprimer la leçon"
-                      onClick={e => {
-                        e.stopPropagation();
-                        handleDeleteLesson(lesson.id);
-                      }}
-                    >
-                      <Trash2 size={20} />
-                    </button>
+                      {/* Icône suppression, visible au survol */}
+                      <button
+                        className="ml-2 text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition"
+                        title="Supprimer la leçon"
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleDeleteLesson(lesson.id);
+                        }}
+                        disabled={isLocked}
+                      >
+                        <Trash2 size={20} />
+                        </button>
                     {user?.role === 'professeur' && (
                       <button
                         className="ml-2 text-gray-400 hover:text-blue-600"
@@ -527,13 +652,14 @@ const Module = () => {
                       >
                         <Edit size={20} />
                       </button>
-                    )}
-                    <div>
-                      <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                      )}
+                      <div>
+                        <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                      </div>
                     </div>
-                  </div>
-                </Card>
-              ))
+                  </Card>
+                );
+              })
             )
           )}
           {activeTab === 'quiz' && (
@@ -642,11 +768,12 @@ const mapLesson = (lesson: any): Lesson => ({
   title: lesson.titre ?? lesson.title ?? '',
   content: lesson.contenu ?? lesson.content ?? '',
   duration: lesson.duree ?? lesson.duration ?? '',
-  objectives: lesson.objectives ?? [],
+  objectives: lesson.objectifs ?? [],
   videoUrl: lesson.videoUrl ?? '',
-  completed: lesson.completed ?? false,
+  completed: lesson.completed ?? false, // Ensure this is correctly mapped
   description: lesson.description ?? '',
   niveau: lesson.niveau ?? '',
+  ordre: lesson.ordre ?? 0,
 });
 
 export default Module;

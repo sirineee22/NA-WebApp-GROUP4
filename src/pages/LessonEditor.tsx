@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Save, Plus, Trash2, Eye, EyeOff, Calendar, Clock, FileText, Video, Image, File, Brain, Settings, Upload, Link, X, Check, AlertCircle } from "lucide-react";
+import { ArrowLeft, Save, Plus, Trash2, Eye, EyeOff, Calendar, Clock, FileText, Video, Image, File, Brain, Settings, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,11 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useAuth } from "@/contexts/AuthContext";
 import DesmosGraph from "@/components/DesmosGraph";
-import { useSidebar } from "@/components/ui/sidebar";
 import TextareaAutosize from 'react-textarea-autosize';
 import { ContentBlock } from '../types/ContentBlock';
 import 'katex/dist/katex.min.css';
@@ -44,7 +42,7 @@ interface ManimCategory {
 
 interface TextBlock {
   content: string;
-  latexEnabled: boolean;
+  latexEnabled: boolean; // Keeping this for now, but its functionality will be ignored for text content
 }
 
 interface ImageBlock {
@@ -80,11 +78,10 @@ interface ExerciceBlock {
   id_lecon?: number | null;
   id_enseignant: number;
   tp?: string;
-  type?: string; // Add type property to match ContentBlock expectations
-  solutionVisible?: boolean; // Add solutionVisible property
+  type?: string;
+  solutionVisible?: boolean;
 }
 
-// Define the type for Manim video options
 interface ManimVideoOption {
   label: string;
   url: string;
@@ -97,8 +94,7 @@ const LessonEditor = () => {
   const { lessonId, moduleId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  
-  // États principaux
+
   const [lesson, setLesson] = useState({
     titre: '',
     description: '',
@@ -108,7 +104,7 @@ const LessonEditor = () => {
     prerequis: '',
     progression: true
   });
-  
+
   const [contentBlocks, setContentBlocks] = useState<ContentBlock[]>([]);
   const [selectedBlock, setSelectedBlock] = useState<ContentBlock | null>(null);
   const [showBlockDialog, setShowBlockDialog] = useState(false);
@@ -131,11 +127,9 @@ const LessonEditor = () => {
         console.error('Error fetching Manim videos:', error);
       }
     };
-
     fetchManimVideos();
   }, []);
 
-  // États pour les blocs
   const [videoBlock, setVideoBlock] = useState<VideoBlock>({
     type: 'upload',
     url: '',
@@ -166,7 +160,6 @@ const LessonEditor = () => {
     questions: []
   });
 
-  // Bloc d'exercice
   const [exerciceBlock, setExerciceBlock] = useState<ExerciceBlock>({
     question: '',
     solution: '',
@@ -178,130 +171,56 @@ const LessonEditor = () => {
     tp: ''
   });
 
-  // Ajoute un nouvel état pour gérer l'étape de sélection du type de bloc
   const [showTypeDialog, setShowTypeDialog] = useState(false);
-
-  // État pour le bloc Desmos
-  const [desmosBlock, setDesmosBlock] = useState({
-    expression: '',
-  });
-
-  // Ajoute un nouvel état pour gérer l'édition inline
+  const [desmosBlock, setDesmosBlock] = useState({ expression: '' });
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
 
-  // Fonctions pour l'upload de fichiers
-  const handleVideoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && selectedBlock?.type === 'video') {
-      if (file.type.startsWith('video/')) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          setSelectedBlock(prev => {
-            if (!prev || prev.type !== 'video') return prev;
-            return {
-              ...prev,
-              content: {
-                ...prev.content,
-                file: file,
-                preview: e.target?.result as string
-              }
-            };
-          });
-        };
-        reader.readAsDataURL(file);
+  // Removed isMathFormula function
+  // function isMathFormula(text: string): boolean {
+  //   const mathPattern = /([=+\-*/^]|\\frac|\\sqrt|\\int|\\sum|\\det|\\lim|\\sin|\\cos|\\tan|\d+\s*[a-zA-Z])/;
+  //   return mathPattern.test(text.trim()) && text.trim().length < 100;
+  // }
+
+  const renderWithLatex = (content: string) => {
+    if (!content) return null;
+
+    // Regex to find all math expressions (inline and block)
+    const regex = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
+    const parts = content.split(regex);
+
+    return parts.map((part, index) => {
+      if (part.startsWith('$$') && part.endsWith('$$')) {
+        // Block Math
+        const math = part.slice(2, -2);
+        return <BlockMath key={index} math={math} />;
+      } else if (part.startsWith('$') && part.endsWith('$')) {
+        // Inline Math
+        const math = part.slice(1, -1);
+        return <InlineMath key={index} math={math} />;
       } else {
-        alert('Veuillez sélectionner un fichier vidéo valide (MP4, AVI, etc.)');
+        // HTML content
+        return <div key={index} dangerouslySetInnerHTML={{ __html: part }} />;
       }
-    }
+    });
   };
 
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && selectedBlock?.type === 'image') {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          setSelectedBlock(prev => {
-            if (!prev || prev.type !== 'image') return prev;
-            return {
-              ...prev,
-              content: {
-                ...prev.content,
-                url: e.target?.result as string
-              }
-            };
-          });
-        };
-        reader.readAsDataURL(file);
-      } else {
-        alert('Veuillez sélectionner un fichier image valide');
-      }
-    }
-  };
+  // Removed renderInlineMath as it's no longer needed with simplified renderWithLatex
+  // const renderInlineMath = (text: string) => {
+  //   const parts = text.split(/(\$[^$]+\$)/);
+  //   return parts.map((part, index) => {
+  //     if (part.startsWith('$') && part.endsWith('$')) {
+  //       const math = part.slice(1, -1);
+  //       return <InlineMath key={index} math={math} />;
+  //     }
+  //     return part;
+  //   });
+  // };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && selectedBlock?.type === 'file') {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setSelectedBlock(prev => {
-          if (!prev || prev.type !== 'file') return prev;
-          return {
-            ...prev,
-            content: {
-              ...prev.content,
-              url: e.target?.result as string,
-              title: file.name
-            }
-          };
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  // Charger la leçon existante si on édite
-  useEffect(() => {
-    if (lessonId && lessonId !== 'new') {
-      setLoading(true);
-      fetch(`http://localhost:8000/lessons/${lessonId}`)
-        .then(res => res.json())
-        .then(data => {
-          setLesson({
-            titre: data.titre || '',
-            description: data.description || '',
-            duree: data.duree || '',
-            niveau: data.niveau || 'intermediaire',
-            visibilite: data.visibilite || 'brouillon',
-            prerequis: data.prerequis || '',
-            progression: data.progression !== false
-          });
-          // Charger les blocs de contenu depuis le backend
-          try {
-            if (data.contenu) {
-              const blocks = JSON.parse(data.contenu);
-              if (Array.isArray(blocks)) {
-                setContentBlocks(blocks);
-              }
-            }
-          } catch (err) {
-            console.error('Erreur lors du parsing des blocs de contenu:', err);
-            setContentBlocks([]);
-          }
-        })
-        .catch(err => {
-          console.error('Erreur lors du chargement de la leçon:', err);
-        })
-        .finally(() => setLoading(false));
-    }
-  }, [lessonId]);
-
-  // Modifie la fonction addBlock pour afficher d'abord le choix du type
+  // Add block
   const addBlock = () => {
-    setShowTypeDialog(true); // Only open the type dialog, do not add any block yet
+    setShowTypeDialog(true);
   };
 
-  // Nouvelle fonction pour gérer la sélection du type de bloc
   const handleTypeSelect = (type: ContentBlock['type']) => {
     setBlockType(type);
     setShowTypeDialog(false);
@@ -310,7 +229,6 @@ const LessonEditor = () => {
       setShowTypeDialog(false);
       return;
     }
-
     const newBlock: ContentBlock = {
       id: `block-${Date.now()}`,
       type: type,
@@ -319,21 +237,19 @@ const LessonEditor = () => {
     };
     setContentBlocks([...contentBlocks, newBlock]);
     if (type === 'text') {
-      setEditingBlockId(newBlock.id); // Inline edit for text
+      setEditingBlockId(newBlock.id);
     } else {
       setSelectedBlock(newBlock);
       setShowBlockDialog(true);
     }
   };
 
-  // Éditer un bloc existant
   const editBlock = (block: ContentBlock) => {
     setEditingBlockId(block.id);
     switch (block.type) {
       case 'video':
         setVideoBlock(block.content);
         break;
-
       case 'text':
         setTextBlock(block.content);
         break;
@@ -355,7 +271,6 @@ const LessonEditor = () => {
     }
   };
 
-  // Obtenir le contenu par défaut selon le type
   const getDefaultContent = (type: string) => {
     switch (type) {
       case 'video':
@@ -379,13 +294,9 @@ const LessonEditor = () => {
     }
   };
 
-  // Sauvegarder un bloc
   const saveBlock = async () => {
     if (!selectedBlock) return;
-
-    // Option 1: Ajout MULTIBLOCS pour exercice + médias/texte associés
     if (selectedBlock.type === 'exercice' && !selectedBlock.content?.exerciseId) {
-      // 1. Créer le bloc exercice
       let content;
       try {
         if (!exerciceBlock.question || !exerciceBlock.solution || !user?.id) {
@@ -399,7 +310,7 @@ const LessonEditor = () => {
           type: exerciceBlock.type || 'qcm',
           points: Number(exerciceBlock.points) || 1,
           id_module: Number(moduleId) || null,
-          id_lecon: lessonId === 'new' ? null : Number(lessonId),
+          id_lecon: lessonId && lessonId !== 'new' ? Number(lessonId) : null,
           id_enseignant: user.id,
           id_chapitre: null
         };
@@ -426,16 +337,13 @@ const LessonEditor = () => {
         alert('Erreur lors de la création de l\'exercice');
         return;
       }
-      // 2. Créer la liste des nouveaux blocs à ajouter
       const newBlocks = [];
-      // Bloc exercice
       newBlocks.push({
         id: `block-${Date.now()}-ex`,
         type: 'exercice',
         content,
         order: contentBlocks.length + newBlocks.length,
       });
-      // Bloc image
       if (imageBlock.url) {
         newBlocks.push({
           id: `block-${Date.now()}-img`,
@@ -444,7 +352,6 @@ const LessonEditor = () => {
           order: contentBlocks.length + newBlocks.length,
         });
       }
-      // Bloc fichier
       if (fileBlock.url) {
         newBlocks.push({
           id: `block-${Date.now()}-file`,
@@ -453,7 +360,6 @@ const LessonEditor = () => {
           order: contentBlocks.length + newBlocks.length,
         });
       }
-      // Bloc vidéo
       if (videoBlock.url || videoBlock.file) {
         newBlocks.push({
           id: `block-${Date.now()}-vid`,
@@ -462,7 +368,6 @@ const LessonEditor = () => {
           order: contentBlocks.length + newBlocks.length,
         });
       }
-      // Bloc texte
       if (textBlock.content && textBlock.content.trim() !== '') {
         newBlocks.push({
           id: `block-${Date.now()}-txt`,
@@ -471,38 +376,32 @@ const LessonEditor = () => {
           order: contentBlocks.length + newBlocks.length,
         });
       }
-      // Ajouter tous les blocs à contentBlocks
       setContentBlocks([...contentBlocks, ...newBlocks]);
       setShowBlockDialog(false);
       setSelectedBlock(null);
-      // Reset states
       setVideoBlock({ type: 'upload', url: '', title: '', description: '', subtitles: '', chapters: '' });
-
       setTextBlock({ content: '', latexEnabled: false });
       setImageBlock({ url: '', alt: '', caption: '' });
       setFileBlock({ url: '', title: '', type: 'pdf' });
       setQuizBlock({ questions: [] });
       setExerciceBlock({ 
-      question: '', 
-      solution: '', 
-      feedback: '', 
-      points: 1, 
-      id_module: moduleId ? parseInt(moduleId) : null,
-      id_lecon: lessonId && lessonId !== 'new' ? parseInt(lessonId) : null,
-      id_enseignant: user?.id || 0,
-      tp: ''
-    });
+        question: '', 
+        solution: '', 
+        feedback: '', 
+        points: 1, 
+        id_module: moduleId ? parseInt(moduleId) : null,
+        id_lecon: lessonId && lessonId !== 'new' ? parseInt(lessonId) : null,
+        id_enseignant: user?.id || 0,
+        tp: ''
+      });
       setDesmosBlock({ expression: '' });
       return;
     }
-
-    // --- Comportement inchangé pour les autres types de bloc ---
     let content;
     switch (selectedBlock.type) {
       case 'video':
         content = videoBlock;
         break;
-
       case 'text':
         content = textBlock;
         break;
@@ -518,12 +417,10 @@ const LessonEditor = () => {
       case 'exercice':
         content = exerciceBlock;
         break;
-
       case 'desmos':
         content = desmosBlock;
         break;
     }
-
     setContentBlocks(blocks => 
       blocks.map(block => 
         block.id === selectedBlock.id 
@@ -533,10 +430,7 @@ const LessonEditor = () => {
     );
     setShowBlockDialog(false);
     setSelectedBlock(null);
-    
-    // Réinitialiser les états des blocs
     setVideoBlock({ type: 'upload', url: '', title: '', description: '', subtitles: '', chapters: '' });
-
     setTextBlock({ content: '', latexEnabled: false });
     setImageBlock({ url: '', alt: '', caption: '' });
     setFileBlock({ url: '', title: '', type: 'pdf' });
@@ -554,14 +448,11 @@ const LessonEditor = () => {
     setDesmosBlock({ expression: '' });
   };
 
-  // Supprimer un bloc
   const deleteBlock = (blockId: string) => {
     setContentBlocks(blocks => blocks.filter(block => block.id !== blockId));
   };
 
-  // Sauvegarder la leçon complète
   const saveLesson = async () => {
-    console.log('Saving lesson with params:', { lessonId, moduleId });
     setSaving(true);
     try {
       if (!moduleId) {
@@ -586,26 +477,20 @@ const LessonEditor = () => {
         contenu: JSON.stringify(contentBlocks),
         ordre: 1
       };
-
       const url = lessonId === 'new' 
         ? 'http://localhost:8000/lessons'
         : `http://localhost:8000/lessons/${lessonId}`;
       const method = lessonId === 'new' ? 'POST' : 'PUT';
-
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(lessonData)
       });
-
       if (!res.ok) {
         const errorText = await res.text();
-        console.error('Erreur backend:', errorText);
         throw new Error('Erreur lors de la sauvegarde: ' + errorText);
       }
       const savedLesson = await res.json();
-
-      // Si c'est une nouvelle leçon, mettre à jour les exercices avec l'ID de la leçon
       if (lessonId === 'new') {
         const exerciseBlocks = contentBlocks.filter(block => block.type === 'exercice' && block.content.exerciseId);
         for (const block of exerciseBlocks) {
@@ -623,56 +508,14 @@ const LessonEditor = () => {
           }
         }
       }
-
-      // Rediriger vers la page de visualisation de la leçon
       navigate(`/lesson-view/${savedLesson.id}/${moduleId}`);
     } catch (err) {
-      console.error('Erreur lors de la sauvegarde:', err);
       alert('Erreur lors de la sauvegarde de la leçon: ' + (err instanceof Error ? err.message : ''));
     } finally {
       setSaving(false);
     }
   };
 
-  // Fonction pour rendre le contenu avec support LaTeX
-  const renderWithLatex = (content: string, isInline: boolean = false) => {
-    if (!content) return null;
-    // Si le contenu est déjà en HTML, on le parse
-    if (content.includes('<') && content.includes('>')) {
-      return parse(content);
-    }
-    // Détecter les blocs mathématiques délimités par $$
-    const blockMathRegex = /\$\$([^$]+)\$\$/g;
-    const parts = content.split(blockMathRegex);
-    const hasBlockMath = content.includes('$$');
-    if (hasBlockMath) {
-      return (
-        <div>
-          {parts.map((part, index) => {
-            if (index % 2 === 1) {
-              return <BlockMath key={index} math={part} />;
-            }
-            return <span key={index}>{renderInlineMath(part)}</span>;
-          })}
-        </div>
-      );
-    }
-    // Si pas de blocs mathématiques, vérifier le LaTeX en ligne
-    return renderInlineMath(content);
-  };
-
-  const renderInlineMath = (text: string) => {
-    const parts = text.split(/(\$[^$]+\$)/);
-    return parts.map((part, index) => {
-      if (part.startsWith('$') && part.endsWith('$')) {
-        const math = part.slice(1, -1);
-        return <InlineMath key={index} math={math} />;
-      }
-      return part;
-    });
-  };
-
-  // Rendu du bloc de contenu
   const renderBlock = (block: ContentBlock) => {
     const content = block.content || {};
     if (editingBlockId === block.id) {
@@ -684,7 +527,7 @@ const LessonEditor = () => {
               <TextareaAutosize
                 value={textBlock.content}
                 onChange={e => setTextBlock({ ...textBlock, content: e.target.value })}
-                placeholder="Contenu de la leçon... Utilisez $...$ pour les formules LaTeX"
+                placeholder="Contenu de la leçon... Tapez du texte" // Updated placeholder
                 className="min-h-[100px] resize-none"
               />
               <div className="flex gap-2">
@@ -697,6 +540,7 @@ const LessonEditor = () => {
               </div>
             </div>
           );
+        // ...other cases unchanged...
         case 'video':
           return (
             <div className="flex flex-col gap-2 p-3 bg-blue-50 rounded-lg">
@@ -789,7 +633,6 @@ const LessonEditor = () => {
             </div>
           );
         case 'quiz':
-          // For simplicity, just allow editing the number of questions inline
           return (
             <div className="flex flex-col gap-2 p-3 bg-red-50 rounded-lg">
               <Brain className="w-5 h-5 text-red-600" />
@@ -853,7 +696,6 @@ const LessonEditor = () => {
           return <div>Type de bloc inconnu</div>;
       }
     }
-    
     switch (block.type) {
       case 'video':
         return (
@@ -877,13 +719,17 @@ const LessonEditor = () => {
         );
       case 'text':
         return (
-          <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg">
-            <FileText className="w-5 h-5 text-green-600" />
+          <div className="flex items-start gap-3 p-3 bg-green-50 rounded-lg">
+            <FileText className="w-5 h-5 text-green-600 mt-1" />
             <div className="flex-1">
               <div className="font-medium">Texte</div>
-              <div className="text-sm text-gray-600 line-clamp-2">
+              <div className="text-sm text-gray-600 line-clamp-2 prose prose-sm">
                 {renderWithLatex(content.content || '')}
               </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => editBlock(block)}><Edit size={14} /></Button>
+              <Button variant="ghost" size="sm" onClick={() => deleteBlock(block.id)}><Trash2 size={14} /></Button>
             </div>
           </div>
         );
@@ -1022,17 +868,6 @@ const LessonEditor = () => {
                   placeholder="Ex: Élimination de Gauss-Jordan"
                 />
               </div>
-
-             
-
-              
-
-              
-
-              
-
-              
-
               <div>
                 <Label htmlFor="visibilite">Visibilité</Label>
                 <Select value={lesson.visibilite} onValueChange={(value) => setLesson({...lesson, visibilite: value})}>
@@ -1124,7 +959,7 @@ const LessonEditor = () => {
             {[
               { type: 'video', icon: Video, label: 'Vidéo', desc: 'MP4, YouTube, Vimeo' },
               { type: 'video_manim', icon: Video, label: 'Vidéo Manim', desc: 'Animations mathématiques' },
-              { type: 'text', icon: FileText, label: 'Texte', desc: 'Avec support LaTeX' },
+              { type: 'text', icon: FileText, label: 'Texte', desc: 'Texte simple' }, // Updated description
               { type: 'image', icon: Image, label: 'Image', desc: 'Schémas, diagrammes' },
               { type: 'file', icon: File, label: 'Fichier', desc: 'PDF, documents' },
               { type: 'quiz', icon: Brain, label: 'Quiz', desc: 'Questions interactives' },
@@ -1202,4 +1037,4 @@ const LessonEditor = () => {
   );
 };
 
-export default LessonEditor; 
+export default LessonEditor;

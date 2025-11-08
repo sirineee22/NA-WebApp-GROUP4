@@ -22,7 +22,7 @@ class DatabaseManager:
             with self.lock:
                 cursor = self.connection.cursor()
                 # Table Utilisateur
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS utilisateur (
                         id_utilisateur INTEGER PRIMARY KEY AUTOINCREMENT,
                         nom TEXT NOT NULL,
@@ -33,9 +33,9 @@ class DatabaseManager:
                         derniere_connexion TIMESTAMP,
                         actif BOOLEAN DEFAULT 1
                     )
-                """)
+                ''')
                 # Table Module
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS module (
                         id_module INTEGER PRIMARY KEY AUTOINCREMENT,
                         titre TEXT NOT NULL,
@@ -52,36 +52,57 @@ class DatabaseManager:
                         objectifs TEXT,
                         FOREIGN KEY (id_enseignant) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
-                # Table quiz
-                cursor.execute("""
+                ''')
+                
+                # Table Quiz (Updated)
+                cursor.execute("DROP TABLE IF EXISTS quiz") # Drop to ensure full recreation
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS quiz (
                         id_quiz INTEGER PRIMARY KEY AUTOINCREMENT,
                         titre TEXT NOT NULL,
                         id_module INTEGER,
-                        questions TEXT NOT NULL, -- JSON string: [{question, choix, bonne_reponse}]
-                        reponses TEXT NOT NULL, -- JSON string: [[choix1, choix2, ...], ...]
-                        reponse_correcte TEXT NOT NULL, -- JSON string: [bonne_reponse1, ...]
+                        questions TEXT, -- JSON string: [{question, choix, bonne_reponse}]
+                        reponses TEXT, -- JSON string: [[choix1, choix2, ...], ...]
+                        reponse_correcte TEXT, -- JSON string: [bonne_reponse1, ...]
                         date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         auteur TEXT,
+                        actif BOOLEAN DEFAULT 1,
                         FOREIGN KEY (id_module) REFERENCES module(id_module)
                     )
-                """)
-                # Table ScoreQuiz
-                cursor.execute("""
+                ''')
+
+                # Table Quiz Question (Existing, ensure consistent with new quiz table)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS quiz_question (\
+                        id_question INTEGER PRIMARY KEY AUTOINCREMENT,\
+                        id_quiz INTEGER,\
+                        enonce TEXT NOT NULL,\
+                        choix TEXT,\
+                        bonnes_reponses TEXT,\
+                        FOREIGN KEY (id_quiz) REFERENCES quiz(id_quiz)\
+                    )\
+                ''')
+
+                # Table ScoreQuiz (Updated)
+                cursor.execute("DROP TABLE IF EXISTS score_quiz") # Drop to ensure full recreation
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS score_quiz (
                         id_score INTEGER PRIMARY KEY AUTOINCREMENT,
-                        id_utilisateur INTEGER,
-                        id_quiz INTEGER,
-                        score INTEGER,
+                        id_utilisateur INTEGER NOT NULL,
+                        id_quiz INTEGER NULL, -- Made nullable
+                        module_title TEXT NOT NULL,
+                        lesson_title TEXT NOT NULL,
+                        score REAL NOT NULL,
+                        total_questions INTEGER NOT NULL,
+                        answers TEXT NOT NULL, -- JSON string of QuizSubmittedAnswer[]
                         passed BOOLEAN DEFAULT 0,
                         date_passage TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (id_utilisateur) REFERENCES utilisateur(id_utilisateur),
-                        FOREIGN KEY (id_quiz) REFERENCES quiz(id_quiz)
+                        FOREIGN KEY (id_utilisateur) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
+                ''')
+
                 # Table Leçon
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS lecon (
                         id_lecon INTEGER PRIMARY KEY AUTOINCREMENT,
                         titre TEXT NOT NULL,
@@ -98,9 +119,9 @@ class DatabaseManager:
                         FOREIGN KEY (id_module) REFERENCES module(id_module),
                         FOREIGN KEY (id_enseignant) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
+                ''')
                 # Table Visualisation
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS visualisation (
                         id_visualisation INTEGER PRIMARY KEY AUTOINCREMENT,
                         type TEXT NOT NULL,
@@ -114,10 +135,9 @@ class DatabaseManager:
                         FOREIGN KEY (id_module) REFERENCES module(id_module),
                         FOREIGN KEY (id_lecon) REFERENCES lecon(id_lecon)
                     )
-                """)
+                ''')
                 # Table Exercice
-                # Add 'tp' column if not exists
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS exercice (
                         id_exercice INTEGER PRIMARY KEY AUTOINCREMENT,
                         title TEXT NOT NULL,
@@ -141,14 +161,14 @@ class DatabaseManager:
                         FOREIGN KEY (id_lecon) REFERENCES lecon(id_lecon),
                         FOREIGN KEY (id_enseignant) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
+                ''')
                 # Migration: add 'tp' column if missing
                 cursor.execute("PRAGMA table_info(exercice)")
                 columns = [row[1] for row in cursor.fetchall()]
                 if 'tp' not in columns:
                     cursor.execute("ALTER TABLE exercice ADD COLUMN tp TEXT")
                 # Table Progression Étudiant
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS progression_etudiant (
                         id_progression INTEGER PRIMARY KEY AUTOINCREMENT,
                         id_etudiant INTEGER,
@@ -166,20 +186,9 @@ class DatabaseManager:
                         FOREIGN KEY (id_lecon) REFERENCES lecon(id_lecon),
                         FOREIGN KEY (id_exercice) REFERENCES exercice(id_exercice)
                     )
-                """)
-                # Table Quiz
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS quiz (
-                        id_quiz INTEGER PRIMARY KEY AUTOINCREMENT,
-                        titre TEXT NOT NULL,
-                        id_module INTEGER,
-                        date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        actif BOOLEAN DEFAULT 1,
-                        FOREIGN KEY (id_module) REFERENCES module(id_module)
-                    )
-                """)
+                ''')
                 # Table Linear System History
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS linear_system_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         id_utilisateur INTEGER,
@@ -191,21 +200,37 @@ class DatabaseManager:
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (id_utilisateur) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
-                # Table Quiz Question
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS quiz_question (
-                        id_question INTEGER PRIMARY KEY AUTOINCREMENT,
-                        id_quiz INTEGER,
-                        enonce TEXT NOT NULL,
-                        choix TEXT,
-                        bonnes_reponses TEXT,
-                        FOREIGN KEY (id_quiz) REFERENCES quiz(id_quiz)
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS user_lesson_progress (
+                        user_id INTEGER NOT NULL,
+                        lesson_id INTEGER NOT NULL,
+                        module_id INTEGER NOT NULL,
+                        completed BOOLEAN DEFAULT 0,
+                        completion_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (user_id, lesson_id),
+                        FOREIGN KEY (user_id) REFERENCES utilisateur(id_utilisateur),
+                        FOREIGN KEY (lesson_id) REFERENCES lecon(id_lecon),
+                        FOREIGN KEY (module_id) REFERENCES module(id_module)
                     )
-                """)
+                ''')
+
+                # Table Documents
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS document (
+                        id_document INTEGER PRIMARY KEY AUTOINCREMENT,
+                        filename TEXT NOT NULL,
+                        file_path TEXT NOT NULL,
+                        document_type TEXT NOT NULL, -- 'exam' or 'tp'
+                        id_enseignant INTEGER,
+                        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        actif BOOLEAN DEFAULT 1,
+                        FOREIGN KEY (id_enseignant) REFERENCES utilisateur(id_utilisateur)
+                    )
+                ''')
 
                 # Table Calendar Events
-                cursor.execute("""
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS calendar_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         title TEXT NOT NULL,
@@ -214,7 +239,7 @@ class DatabaseManager:
                         id_enseignant INTEGER,
                         FOREIGN KEY (id_enseignant) REFERENCES utilisateur(id_utilisateur)
                     )
-                """)
+                ''')
                 self.connection.commit()
                 logger.info("SQLite database tables created successfully")
         except Exception as e:
@@ -249,4 +274,4 @@ class DatabaseManager:
             logger.info("SQLite database connection closed")
 
 # Global database instance
-db_manager = DatabaseManager() 
+db_manager = DatabaseManager()

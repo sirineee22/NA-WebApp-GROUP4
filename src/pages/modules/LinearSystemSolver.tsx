@@ -28,6 +28,7 @@ const LinearSystemSolver = () => {
   const { user } = useAuth();
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const boardRef = useRef<JXG.Board | null>(null);
+
   const [eq1, setEq1] = useState('y = 2x + 1');
   const [eq2, setEq2] = useState('y = -x + 4');
   const [solution, setSolution] = useState<{ x: number; y: number } | null>(null);
@@ -36,24 +37,33 @@ const LinearSystemSolver = () => {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
   const solveSystem = async () => {
-    if (!eq1 || !eq2) return;
     try {
       const response = await axios.post('http://localhost:8000/api/solve-linear-system', {
         eq1,
         eq2,
         user_id: user?.id,
       });
+
       const { solution, solution_type, coeffs1, coeffs2 } = response.data;
+      
       setSolution(solution);
       setSolutionType(solution_type);
       setCoeffs({ c1: coeffs1, c2: coeffs2 });
 
-      if (user && solution_type !== 'invalid') {
-        fetchHistory();
+      if (user) {
+        fetchHistory(); // Refresh history after a new solution is found
       }
+
     } catch (error) {
-      console.error("Error solving system:", error);
-      toast({ variant: 'destructive', title: 'Erreur du serveur', description: 'Impossible de contacter le backend.' });
+      console.error('Error solving system:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Erreur',
+        description: 'Impossible de résoudre le système. Vérifiez les équations et réessayez.',
+      });
+      setSolutionType('error');
+      setSolution(null);
+      setCoeffs({ c1: null, c2: null });
     }
   };
 
@@ -68,7 +78,7 @@ const LinearSystemSolver = () => {
       setHistory(formattedHistory);
     } catch (error) {
       console.error("Failed to fetch history:", error);
-      toast({ variant: 'destructive', title: 'Erreur', description: 'Impossible de charger l\'historique.' });
+      toast({ variant: 'destructive', title: 'Erreur', description: "Impossible de charger l'historique." });
     }
   };
 
@@ -78,75 +88,64 @@ const LinearSystemSolver = () => {
     }
   }, [user]);
 
+  // This useEffect will run whenever the equations change, but with a debounce
   useEffect(() => {
-    solveSystem(); // Solve on initial load
-  }, []);
+    const handler = setTimeout(() => {
+      solveSystem();
+    }, 500); // Debounce API call
 
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [eq1, eq2]);
+
+  // Initialize and update JSXGraph board
   useEffect(() => {
     if (!boardContainerRef.current) return;
 
     const board = JXG.JSXGraph.initBoard(boardContainerRef.current, {
-      boundingbox: [-10, 10, 10, -10],
-      axis: true,
-      grid: true,
-      showCopyright: false,
-      showNavigation: true,
+        boundingbox: [-10, 10, 10, -10],
+        axis: true,
+        grid: true,
+        showCopyright: false,
     });
-    boardRef.current = board;
 
-    const updateLineEquation = (line, setEq) => {
-        const slope = line.getSlope();
-        const yIntercept = line.getRise();
-        const sign = yIntercept < 0 ? '-' : '+';
-        const eq = `y = ${slope.toFixed(2)}x ${sign} ${Math.abs(yIntercept).toFixed(2)}`;
-        setEq(eq);
+    const updateEquationFromPoints = (p1: JXG.Point, p2: JXG.Point, setEq: (eq: string) => void) => {
+        const dx = p2.X() - p1.X();
+        if (Math.abs(dx) < 1e-9) return; // Avoid vertical line error
+        const m = (p2.Y() - p1.Y()) / dx;
+        const b = p1.Y() - m * p1.X();
+        const bSign = b >= 0 ? '+' : '-';
+        setEq(`y = ${m.toFixed(2)}x ${bSign} ${Math.abs(b).toFixed(2)}`);
     };
 
-    // Define lines by two invisible, draggable points
-    const p1 = board.create('point', [-5, -5], { visible: false });
-    const p2 = board.create('point', [5, 5], { visible: false });
-    const line1 = board.create('line', [p1, p2], { strokeColor: '#3b82f6', strokeWidth: 2, fixed: false });
+    // Initial points based on initial equations
+    const p1 = board.create('point', [0, 1], { name: 'P1', face: 'o', size: 3, color: '#3b82f6' });
+    const p2 = board.create('point', [2, 5], { name: 'P2', face: 'o', size: 3, color: '#3b82f6' });
+    const line1 = board.create('line', [p1, p2], { strokeColor: '#3b82f6', strokeWidth: 2 });
 
-    const p3 = board.create('point', [-5, 5], { visible: false });
-    const p4 = board.create('point', [5, -5], { visible: false });
-    const line2 = board.create('line', [p3, p4], { strokeColor: '#ef4444', strokeWidth: 2, fixed: false });
+    const p3 = board.create('point', [0, 4], { name: 'P3', face: 'o', size: 3, color: '#ef4444' });
+    const p4 = board.create('point', [2, 2], { name: 'P4', face: 'o', size: 3, color: '#ef4444' });
+    const line2 = board.create('line', [p3, p4], { strokeColor: '#ef4444', strokeWidth: 2 });
 
-    const intersection = board.create('intersection', [line1, line2, 0], {
+    board.create('intersection', [line1, line2, 0], {
         name: 'Solution',
         face: 'o',
         size: 4,
         fillColor: '#10b981',
         strokeColor: '#10b981',
-        visible: true
+        visible: () => solutionType === 'unique',
     });
 
-    const updateAll = () => {
-        updateLineEquation(line1, setEq1);
-        updateLineEquation(line2, setEq2);
-        if (intersection.coords.usrCoords[1] !== Infinity) {
-            setSolution({ x: intersection.coords.usrCoords[1], y: intersection.coords.usrCoords[2] });
-            setSolutionType('unique');
-        } else {
-            setSolution(null);
-            setSolutionType('none');
-        }
-    };
+    p1.on('drag', () => updateEquationFromPoints(p1, p2, setEq1));
+    p2.on('drag', () => updateEquationFromPoints(p1, p2, setEq1));
+    p3.on('drag', () => updateEquationFromPoints(p3, p4, setEq2));
+    p4.on('drag', () => updateEquationFromPoints(p3, p4, setEq2));
 
-    // Listen to the 'drag' event on the lines themselves
-    line1.on('drag', updateAll);
-    line2.on('drag', updateAll);
-
-    // Initial update
-    updateAll();
-
-    // Cleanup
     return () => {
-      if (boardRef.current) {
-        JXG.JSXGraph.freeBoard(boardRef.current);
-        boardRef.current = null;
-      }
+        JXG.JSXGraph.freeBoard(board);
     };
-  }, []);
+}, []); // This effect should run only once
 
   const handleClearHistory = async () => {
     if (!user) return;
@@ -156,7 +155,7 @@ const LinearSystemSolver = () => {
       toast({ title: 'Succès', description: 'Votre historique a été vidé.' });
     } catch (error) {
       console.error("Failed to clear history:", error);
-      toast({ variant: 'destructive', title: 'Erreur', description: 'Impossible de vider l\'historique.' });
+      toast({ variant: 'destructive', title: 'Erreur', description: "Impossible de vider l'historique." });
     }
   };
 
@@ -165,11 +164,11 @@ const LinearSystemSolver = () => {
       case 'unique':
         return solution ? `Solution unique : (${solution.x.toFixed(2)}, ${solution.y.toFixed(2)})` : '';
       case 'none':
-        return 'Aucune solution (lignes parallèles).';
+        return 'Aucune solution : Les lignes sont parallèles et ne se croisent jamais.';
       case 'infinite':
-        return 'Une infinité de solutions (lignes confondues).';
+        return 'Infinité de solutions : Les deux équations représentent la même ligne.';
       case 'invalid':
-        return 'Format d\'équation invalide. Utilisez y = mx + b.';
+        return "Format d'équation invalide. Utilisez y = mx + b.";
       default:
         return '';
     }

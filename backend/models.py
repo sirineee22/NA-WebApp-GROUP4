@@ -9,15 +9,19 @@ class QuizQuestion(BaseModel):
     choix: List[str]
     bonnes_reponses: List[int]
 
-class QuizAttemptQuestion(BaseModel):
-    question_id: int
-    selected_answers: List[int]
+class QuizSubmittedAnswer(BaseModel):
+    question_index: int
+    user_answer: Optional[str | int | bool] = None
+    is_correct: bool
 
 class QuizAttemptRequest(BaseModel):
-    quiz_id: int
     user_id: int
-    is_remedial: bool = False
-    questions: List[QuizAttemptQuestion]
+    module_title: str
+    lesson_title: str
+    score: float
+    total_questions: int
+    answers: List[QuizSubmittedAnswer]
+    completed_at: str
 
 class QuizAttemptResponse(BaseModel):
     score: float
@@ -62,6 +66,14 @@ class Lesson(BaseModel):
     id_module: int
     id_enseignant: int
     ordre: Optional[int] = 0
+    completed: Optional[bool] = False
+
+class UserLessonProgress(BaseModel):
+    user_id: int
+    lesson_id: int
+    module_id: int
+    completed: bool = False
+    completion_date: Optional[str] = None
 
 class Exercise(BaseModel):
     id: Optional[int] = None
@@ -73,6 +85,14 @@ class Exercise(BaseModel):
     id_lecon: Optional[int] = None
     id_enseignant: int
     tp: Optional[str] = None 
+
+class Document(BaseModel):
+    id: Optional[int] = None
+    filename: str
+    file_path: str
+    document_type: str # 'exam' or 'tp'
+    id_enseignant: Optional[int] = None
+    upload_date: Optional[str] = None
 
 class CalendarEvent(BaseModel):
     id: Optional[int] = None
