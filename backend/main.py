@@ -29,8 +29,6 @@ app = FastAPI()
 from matrix_router import router as matrix_router
 from routes.calendar_routes import router as calendar_router
 from routes.dashboard_routes import router as dashboard_router
-from chatbot_router import router as chatbot_router
-from huggingface_router import router as huggingface_router
 
 # Import and include the new document router
 from document_router import router as document_router
@@ -38,8 +36,6 @@ from document_router import router as document_router
 app.include_router(matrix_router)
 app.include_router(calendar_router)
 app.include_router(dashboard_router)
-app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
-app.include_router(huggingface_router, prefix="/api/huggingface", tags=["huggingface"])
 app.include_router(document_router, prefix="/api", tags=["documents"])
 
 # Mount static files directory for videos
